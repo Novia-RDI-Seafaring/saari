@@ -583,104 +583,42 @@ def refresh() -> dict[str, Any]:
     }
 
 
-# ---------- openglance bridge ----------
-
-
 @mcp.tool()
-def openglance_init(out: str | None = None) -> dict[str, Any]:
-    """Scaffold (or refresh) an openglance vault for this project.
-
-    Vault path is `[openglance].vault` from `.saaristo/config.toml`, defaulting
-    to `papers/openglance/`. Creates `wiki/` + `README.md` + `config.json`.
-    Idempotent.
-    """
-    return _og.init_vault(
-        out=Path(out) if out else None, project_root=paths.project_root()
-    )
-
-
-@mcp.tool()
-def openglance_export(
+def export_openglance(
+    out_dir: str | None = None,
     status: str | None = None,
     only_missing: bool = False,
 ) -> dict[str, Any]:
-    """Auto-write one renderable wiki page per paper in the corpus.
+    """Compile the corpus into openglance-format markdown files in `out_dir`.
 
-    Tags include flat `paper` + screening status, plus hierarchical
-    `<domain>/<field>/<topic>` derived from OpenAlex `topics` (read on the fly
-    from raw JSON files). Citation edges restricted to corpus members become
-    `[[wiki-links]]` for openglance's graph view.
+    Like tsx for TypeScript: pure conversion. One `<slug>.md` per paper. No
+    README, no config.json, no vault scaffolding — saari just writes paper
+    pages. Anything else in the directory (topic pages, openglance's own
+    config) is yours to manage.
+
+    `out_dir` resolution: explicit arg > `[openglance].out` config > default
+    `papers/openglance/` inside the project.
+
+    Tags: flat `paper` + screening status, plus hierarchical
+    `<domain>/<field>/<topic>` from OpenAlex topics (read on-the-fly from raw
+    JSON). Citation edges restricted to corpus members become `[[wiki-links]]`.
     """
-    r = _og.export_corpus_papers(
-        status=status, only_missing=only_missing, project_root=paths.project_root()
+    from saari import config as _cfg
+
+    root = paths.project_root()
+    if out_dir is None:
+        configured = _cfg.get("openglance.out", project_root=root)
+        target = (root / configured) if configured else (paths.papers_dir(root) / "openglance")
+    else:
+        target = Path(out_dir)
+    r = _og.export_corpus(
+        out_dir=target, status=status, only_missing=only_missing, project_root=root
     )
     return {
-        "vault": r.vault,
+        "out_dir": r.out_dir,
         "n_papers": r.n_papers,
         "n_pages_written": r.n_pages_written,
         "n_pages_skipped": r.n_pages_skipped,
-    }
-
-
-@mcp.tool()
-def openglance_page_write(
-    slug: str,
-    title: str,
-    body: str,
-    type: str = "concept",
-    tags: list[str] | None = None,
-    sources: list[str] | None = None,
-    url: str | None = None,
-    overwrite: bool = False,
-) -> dict[str, Any]:
-    """Write an agent-authored wiki page (topic, synthesis, comparison, etc.).
-
-    `body` is markdown without frontmatter. Convention: include a `## TLDR`
-    section first — openglance uses it as the card teaser.
-
-    `type` ∈ source | entity | concept | synthesis | comparison | question.
-    """
-    return _og.write_page(
-        slug, title, body,
-        type=type, tags=tags, sources=sources, url=url, overwrite=overwrite,
-        project_root=paths.project_root(),
-    )
-
-
-@mcp.tool()
-def openglance_page_list(
-    type: str | None = None,
-    tag_substring: str | None = None,
-) -> dict[str, Any]:
-    """List wiki pages with type / tag-substring filters."""
-    pages = _og.list_pages(
-        type=type, tag_substring=tag_substring, project_root=paths.project_root()
-    )
-    return {"n": len(pages), "pages": pages}
-
-
-@mcp.tool()
-def openglance_page_read(slug: str) -> dict[str, Any] | None:
-    """Read a wiki page; returns frontmatter + body."""
-    return _og.read_page(slug, project_root=paths.project_root())
-
-
-@mcp.tool()
-def openglance_page_delete(slug: str) -> dict[str, Any]:
-    """Delete a wiki page."""
-    ok = _og.delete_page(slug, project_root=paths.project_root())
-    return {"slug": slug, "ok": ok}
-
-
-@mcp.tool()
-def openglance_where() -> dict[str, Any]:
-    """Return the vault path and wiki path. Saari produces the data; openglance
-    (or any compatible renderer) handles build/serve — point its CLI at `wiki`.
-    """
-    root = paths.project_root()
-    return {
-        "vault": str(_og.vault_path(root)),
-        "wiki": str(_og.wiki_dir(root)),
     }
 
 

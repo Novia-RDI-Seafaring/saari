@@ -27,12 +27,8 @@ app = typer.Typer(
 )
 papers_app = typer.Typer(help="Papers in the local DB", no_args_is_help=True)
 searches_app = typer.Typer(help="Past searches", no_args_is_help=True)
-openglance_app = typer.Typer(help="Openglance vault export + render", no_args_is_help=True)
-openglance_page_app = typer.Typer(help="Author / read / list / delete wiki pages", no_args_is_help=True)
-openglance_app.add_typer(openglance_page_app, name="page")
 app.add_typer(papers_app, name="papers")
 app.add_typer(searches_app, name="searches")
-app.add_typer(openglance_app, name="openglance")
 
 console = Console()
 
@@ -646,22 +642,46 @@ def papers_raw(
     console.print(full.read_text())
 
 
-@app.command()
-def export(
-    format: Annotated[str, typer.Argument(help="bibtex")] = "bibtex",
+export_app = typer.Typer(help="Compile the corpus into manuscript-ready formats", no_args_is_help=True)
+app.add_typer(export_app, name="export")
+
+
+@export_app.command("bibtex")
+def export_bibtex_cmd(
     out: Annotated[Path | None, typer.Option("--out", help="Output path (default: papers/refs.bib)")] = None,
     status: Annotated[str | None, typer.Option("--status", help="Filter by status (default: included)")] = "included",
 ) -> None:
-    """Export papers to a manuscript-ready format (v1: BibTeX)."""
+    """Compile to BibTeX. One @article entry per paper, with abstract sanitized."""
     root = _resolve_root()
-    if format != "bibtex":
-        console.print(f"[red]Unknown format:[/] {format}  (supported: bibtex)")
-        raise typer.Exit(2)
     target = out or (paths.papers_dir(root) / "refs.bib")
     r = _export_bibtex(target, status_filter=status, project_root=root)
     console.print(
-        f"[green]Exported[/] {r.n_entries} {status or 'all'} papers  "
+        f"[green]Wrote[/] {r.n_entries} {status or 'all'} papers  "
         f"format={r.format}  path={r.path}"
+    )
+
+
+@export_app.command("openglance")
+def export_openglance_cmd(
+    out: Annotated[Path | None, typer.Option("--out", help="Output dir (default: [openglance].out config or papers/openglance/)")] = None,
+    status: Annotated[str | None, typer.Option("--status", help="Filter by status")] = None,
+    only_missing: Annotated[bool, typer.Option("--only-missing/--all")] = False,
+) -> None:
+    """Compile the corpus to openglance-format markdown (one .md per paper) in `out`.
+
+    Like tsx for TypeScript: pure conversion. No README, no config.json, no
+    vault scaffolding — saari just writes paper pages. Anything else in the
+    target directory (topic pages, openglance's own config) is yours to manage.
+    """
+    root = _resolve_root()
+    target = out
+    if target is None:
+        configured = _config.get("openglance.out", project_root=root)
+        target = (root / configured) if configured else (paths.papers_dir(root) / "openglance")
+    r = _og.export_corpus(out_dir=target, status=status, only_missing=only_missing, project_root=root)
+    console.print(
+        f"[green]Wrote[/] {r.n_pages_written} pages "
+        f"(skipped {r.n_pages_skipped})  out={r.out_dir}"
     )
 
 
@@ -691,115 +711,6 @@ def searches_list(
             r["created_at"],
         )
     console.print(t)
-
-
-# ---------- openglance ----------
-
-
-@openglance_app.command("init")
-def openglance_init(
-    out: Annotated[Path | None, typer.Option("--out", help="Vault path; default from config or papers/openglance")] = None,
-) -> None:
-    """Scaffold an openglance vault (idempotent). Writes README.md + config.json + wiki/."""
-    root = _resolve_root()
-    r = _og.init_vault(out=out, project_root=root)
-    msg = "[green]ready[/]" if not r["created"] else "[green]created[/]"
-    console.print(f"{msg} openglance vault at [bold]{r['path']}[/]")
-
-
-@openglance_app.command("export")
-def openglance_export(
-    status: Annotated[str | None, typer.Option("--status", help="Filter by status (default: all)")] = None,
-    only_missing: Annotated[bool, typer.Option("--only-missing/--all", help="Skip pages already on disk")] = False,
-) -> None:
-    """Export the saari corpus as openglance wiki pages (one per paper)."""
-    root = _resolve_root()
-    r = _og.export_corpus_papers(status=status, only_missing=only_missing, project_root=root)
-    console.print(
-        f"[green]Exported[/] {r.n_pages_written} pages "
-        f"(skipped {r.n_pages_skipped})  vault={r.vault}"
-    )
-
-
-@openglance_app.command("where")
-def openglance_where() -> None:
-    """Print the vault + wiki paths so you can point `openglance build / serve` at them."""
-    root = _resolve_root()
-    console.print(f"[bold]vault:[/] {_og.vault_path(root)}")
-    console.print(f"[bold]wiki:[/]  {_og.wiki_dir(root)}")
-    console.print("[dim]Build and serve are openglance's job — point its CLI at the wiki path.[/]")
-
-
-@openglance_page_app.command("write")
-def openglance_page_write(
-    slug: Annotated[str, typer.Argument(help="Page slug (filename minus .md)")],
-    title: Annotated[str, typer.Option("--title", help="Page title")],
-    body_file: Annotated[Path, typer.Option("--body-file", help="Path to a markdown file containing the body (no frontmatter)")],
-    type: Annotated[str, typer.Option("--type", help="source|entity|concept|synthesis|comparison|question")] = "concept",
-    tag: Annotated[list[str] | None, typer.Option("--tag", help="Tag(s); repeat for multiple")] = None,
-    source: Annotated[list[str] | None, typer.Option("--source", help="Source path(s) for the page")] = None,
-    url: Annotated[str | None, typer.Option("--url")] = None,
-    overwrite: Annotated[bool, typer.Option("--overwrite", help="Replace existing")] = False,
-) -> None:
-    """Write an agent-authored wiki page (topic, concept, synthesis, comparison, question)."""
-    root = _resolve_root()
-    body = body_file.read_text()
-    try:
-        r = _og.write_page(
-            slug, title, body,
-            type=type, tags=tag or [], sources=source or [], url=url,
-            overwrite=overwrite, project_root=root,
-        )
-    except (ValueError, FileExistsError) as e:
-        console.print(f"[red]error:[/] {e}")
-        raise typer.Exit(2) from None
-    console.print(f"[green]wrote[/] {r['path']}")
-
-
-@openglance_page_app.command("list")
-def openglance_page_list(
-    type: Annotated[str | None, typer.Option("--type")] = None,
-    tag: Annotated[str | None, typer.Option("--tag", help="Substring match against tags")] = None,
-) -> None:
-    """List wiki pages with type / tag filters."""
-    root = _resolve_root()
-    pages = _og.list_pages(type=type, tag_substring=tag, project_root=root)
-    if not pages:
-        console.print("[dim]No matching pages.[/]")
-        return
-    for pg in pages:
-        tags_str = " ".join(pg["tags"][:4]) + ("…" if len(pg["tags"]) > 4 else "")
-        console.print(
-            f"  [bold]{pg['slug']}[/]  [dim]{pg['type'] or '?'}[/]  "
-            f"{pg['title'][:60]}  [dim]{tags_str}[/]"
-        )
-
-
-@openglance_page_app.command("read")
-def openglance_page_read(
-    slug: Annotated[str, typer.Argument()],
-) -> None:
-    """Print a wiki page's frontmatter + body."""
-    root = _resolve_root()
-    p = _og.read_page(slug, project_root=root)
-    if p is None:
-        console.print(f"[red]not found:[/] {slug}")
-        raise typer.Exit(1)
-    console.print(f"[dim]{p['path']}[/]")
-    console.print(p["body"])
-
-
-@openglance_page_app.command("delete")
-def openglance_page_delete(
-    slug: Annotated[str, typer.Argument()],
-) -> None:
-    """Delete a wiki page."""
-    root = _resolve_root()
-    if _og.delete_page(slug, project_root=root):
-        console.print(f"[green]deleted[/] {slug}")
-    else:
-        console.print(f"[red]not found:[/] {slug}")
-        raise typer.Exit(1)
 
 
 # ---------- formatting helpers ----------
