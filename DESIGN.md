@@ -99,6 +99,9 @@ Skills marked **live** are implemented on both CLI (`saari <skill>`) and MCP (`s
 | `searches_list(limit)` | **live** — search + snowball history | rows |
 | `embed(only_missing=true)` | **live** — local embeddings via fastembed + `sentence-transformers/all-MiniLM-L6-v2` (384-dim) stored in sqlite-vec; no API cost | `{n_embedded, n_skipped, model, dim, elapsed_sec}` |
 | `query(text, k=20, status?)` | **live** — semantic cosine search over the embedded corpus; returns cards with scores | `{query, n, papers}` with `score` per card |
+| `papers_similar(paper_id, k=10, status?)` | **live** — rank corpus by cosine to a seed paper's embedding; seed excluded | `{seed, n, papers}` with `score` per card |
+| `export_bibtex(status="included", out?)` | **live** — BibTeX export with `<author><year><word>` keys; strips abstract pollution and caps length at 1500 chars | `{path, n_entries, format}` |
+| `refresh()` | **live** — one-shot: embed (only_missing) → project → canvas(both) | per-stage summary |
 | `resolve_abstracts(only_missing=true)` | roadmap — fill bad/missing abstracts via Crossref + portal hints | `{n_resolved, n_failed}` |
 | `suggest_screening(criteria)` | roadmap — LLM-assisted triage suggestions (non-committing) | suggestions |
 | `export(format, status_filter?, out_path)` | roadmap — bibtex / json / csv | path |

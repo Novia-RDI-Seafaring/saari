@@ -10,7 +10,12 @@ from rich.console import Console
 from rich.table import Table
 
 from saari import canvas as _canvas_mod, db, paths
-from saari.embed import embed_papers as _embed_papers, query_corpus as _query_corpus
+from saari.embed import (
+    embed_papers as _embed_papers,
+    query_corpus as _query_corpus,
+    similar_to_paper as _similar_to_paper,
+)
+from saari.export import export_bibtex as _export_bibtex
 from saari.models import Paper
 from saari.projection import project_corpus as _project_corpus
 from saari.snowball import snowball as _snowball
@@ -60,11 +65,13 @@ def init(
 
 @app.command()
 def where() -> None:
-    """Print the active project root and key paths + corpus summary."""
+    """Print the active project root, key paths, corpus summary, and pipeline state."""
     root = _resolve_root()
     with db.connect(paths.db_path(root)) as con:
         counts = db.count_by_status(con)
         n_searches = con.execute("SELECT COUNT(*) FROM search").fetchone()[0]
+        n_embedded = con.execute("SELECT COUNT(*) FROM paper_embedding_meta").fetchone()[0]
+        n_projected = con.execute("SELECT COUNT(*) FROM paper_projection").fetchone()[0]
     console.print(f"[bold]project:[/] {root}")
     console.print(f"  db:      {paths.db_path(root)}")
     console.print(f"  raw:     {paths.raw_dir(root)}")
@@ -72,7 +79,39 @@ def where() -> None:
     if counts:
         total = sum(counts.values())
         breakdown = "  ".join(f"{k}={v}" for k, v in counts.items())
-        console.print(f"[dim]corpus:[/] {total} papers  ({breakdown})  searches={n_searches}")
+        console.print(f"[dim]corpus:[/]   {total} papers  ({breakdown})  searches={n_searches}")
+        console.print(
+            f"[dim]pipeline:[/] embedded={n_embedded}/{total}  projected={n_projected}/{total}"
+        )
+
+
+@app.command()
+def refresh() -> None:
+    """Run embed + project + canvas in one shot.
+
+    Use after adding papers via search/snowball to bring the landscape up to date.
+    Safe to call repeatedly (embed only touches new papers; project and canvas
+    rewrite their outputs).
+    """
+    root = _resolve_root()
+    console.print("[dim]1/3 embedding new papers...[/]")
+    e = _embed_papers(only_missing=True, project_root=root)
+    console.print(
+        f"   [green]embedded[/] {e.n_embedded}  (skipped {e.n_skipped})  elapsed={e.elapsed_sec:.2f}s"
+    )
+    console.print("[dim]2/3 projecting to 2D...[/]")
+    p = _project_corpus(project_root=root)
+    if p.note:
+        console.print(f"   [yellow]{p.note}[/]")
+        return
+    console.print(f"   [green]projected[/] {p.n_points} points  method={p.method}")
+    console.print("[dim]3/3 rendering canvas (obsidian + html)...[/]")
+    papers_dir = paths.papers_dir(root)
+    oc = _canvas_mod.write_obsidian_canvas(papers_dir / "landscape.canvas", project_root=root)
+    hv = _canvas_mod.write_html_viewer(papers_dir / "landscape.html", project_root=root)
+    console.print(
+        f"   [green]wrote[/] {oc['path']}  and  {hv['path']}  ({oc['n_nodes']} nodes)"
+    )
 
 
 @app.command()
@@ -427,6 +466,81 @@ def papers_list(
     _print_paper_table(papers)
 
 
+@papers_app.command("similar")
+def papers_similar(
+    paper_id: Annotated[str, typer.Argument(help="Seed paper id, DOI, arxiv, or PMID")],
+    k: Annotated[int, typer.Option("--k", "-k")] = 10,
+    status: Annotated[str | None, typer.Option("--status")] = None,
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f")] = OutputFormat.md,
+) -> None:
+    """Find papers most similar to a seed paper (cosine over embeddings).
+
+    The seed must be embedded. Seed is excluded from results.
+    """
+    root = _resolve_root()
+    try:
+        hits = _similar_to_paper(paper_id, k=max(k * 3, k), project_root=root)
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(1) from None
+
+    score_by_id = {h.paper_id: h.score for h in hits}
+    with db.connect(paths.db_path(root)) as con:
+        placeholders = ",".join(["?"] * len(hits)) or "NULL"
+        sql = (
+            "SELECT p.*, "
+            "(SELECT COUNT(DISTINCT search_id) FROM search_result sr WHERE sr.paper_id = p.id) AS seen_in "
+            f"FROM paper p WHERE p.id IN ({placeholders})"
+        )
+        args: list = [h.paper_id for h in hits]
+        if status is not None:
+            sql += " AND p.status = ?"
+            args.append(status)
+        rows = con.execute(sql, args).fetchall()
+        papers = sorted(
+            (db._row_to_paper(r) for r in rows),
+            key=lambda p: score_by_id.get(p.id, 0.0),
+            reverse=True,
+        )[:k]
+
+    if not papers:
+        console.print("[dim]No similar papers (try dropping --status filter).[/]")
+        return
+
+    if fmt is OutputFormat.json:
+        console.print_json(
+            data=[
+                {**_paper_card_dict(p), "score": round(score_by_id[p.id], 4)}
+                for p in papers
+            ]
+        )
+        return
+    if fmt is OutputFormat.md:
+        lines = [f"## Similar to `{paper_id}` — {len(papers)} hits", ""]
+        for p in papers:
+            meta_bits = []
+            if p.year is not None:
+                meta_bits.append(str(p.year))
+            if p.cited_by_count is not None:
+                meta_bits.append(f"cited={p.cited_by_count}")
+            if p.venue:
+                meta_bits.append(f"*{p.venue}*")
+            meta = ", ".join(meta_bits)
+            flags = _paper_flags(p)
+            flag_str = f"  ·  flags: {' '.join(flags)}" if flags else ""
+            lines.append(
+                f"- `{p.id}` — score=**{score_by_id[p.id]:+.3f}** — **{p.title}**  ({meta}){flag_str}"
+            )
+            excerpt = _abstract_excerpt(p.abstract, 200)
+            if excerpt:
+                lines.append(f"  > {excerpt}")
+            lines.append("")
+        print("\n".join(lines))
+        return
+    # table / cards
+    _print_paper_cards(papers)
+
+
 @papers_app.command("show")
 def papers_show(
     paper_id: Annotated[str, typer.Argument(help="Paper id, DOI, arxiv ID, or PMID")],
@@ -514,6 +628,25 @@ def papers_raw(
         console.print(f"[red]Raw file missing:[/] {full}")
         raise typer.Exit(1)
     console.print(full.read_text())
+
+
+@app.command()
+def export(
+    format: Annotated[str, typer.Argument(help="bibtex")] = "bibtex",
+    out: Annotated[Path | None, typer.Option("--out", help="Output path (default: papers/refs.bib)")] = None,
+    status: Annotated[str | None, typer.Option("--status", help="Filter by status (default: included)")] = "included",
+) -> None:
+    """Export papers to a manuscript-ready format (v1: BibTeX)."""
+    root = _resolve_root()
+    if format != "bibtex":
+        console.print(f"[red]Unknown format:[/] {format}  (supported: bibtex)")
+        raise typer.Exit(2)
+    target = out or (paths.papers_dir(root) / "refs.bib")
+    r = _export_bibtex(target, status_filter=status, project_root=root)
+    console.print(
+        f"[green]Exported[/] {r.n_entries} {status or 'all'} papers  "
+        f"format={r.format}  path={r.path}"
+    )
 
 
 @searches_app.command("list")

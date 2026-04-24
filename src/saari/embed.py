@@ -146,3 +146,47 @@ def query_corpus(
         cos_sim = max(-1.0, min(1.0, 1.0 - (distance * distance) / 2.0))
         hits.append(QueryHit(paper_id=paper_id, score=cos_sim, distance=distance))
     return hits
+
+
+def similar_to_paper(
+    paper_id: str,
+    k: int = 20,
+    project_root: Path | None = None,
+) -> list[QueryHit]:
+    """Find papers most similar to a seed paper (by its stored embedding).
+
+    Excludes the seed itself from results. If the seed isn't embedded yet,
+    raises ValueError.
+    """
+    root = project_root or paths.project_root()
+    with db.connect(paths.db_path(root)) as con:
+        row = con.execute(
+            "SELECT p.id FROM paper p "
+            "WHERE p.id = ? OR p.doi = ? OR p.arxiv_id = ? OR p.pmid = ?",
+            (paper_id, paper_id, paper_id, paper_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Paper not found: {paper_id}")
+        resolved_id = row["id"]
+
+        vec_row = con.execute(
+            "SELECT embedding FROM paper_vec WHERE paper_id = ?",
+            (resolved_id,),
+        ).fetchone()
+        if vec_row is None:
+            raise ValueError(
+                f"Paper {resolved_id} is not embedded. Run `saari embed` first."
+            )
+
+        # Over-fetch by 1 so we can drop the seed itself.
+        rows = db.vector_search(con, vec_row["embedding"], k=k + 1)
+
+    hits: list[QueryHit] = []
+    for pid, distance in rows:
+        if pid == resolved_id:
+            continue
+        cos_sim = max(-1.0, min(1.0, 1.0 - (distance * distance) / 2.0))
+        hits.append(QueryHit(paper_id=pid, score=cos_sim, distance=distance))
+        if len(hits) >= k:
+            break
+    return hits

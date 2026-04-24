@@ -16,9 +16,17 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
-from saari import db, paths
-from saari.embed import embed_papers as _embed_papers, query_corpus as _query_corpus
+from pathlib import Path
+
+from saari import canvas as _canvas_mod, db, paths
+from saari.embed import (
+    embed_papers as _embed_papers,
+    query_corpus as _query_corpus,
+    similar_to_paper as _similar_to_paper,
+)
+from saari.export import export_bibtex as _export_bibtex
 from saari.models import Paper
+from saari.projection import project_corpus as _project_corpus
 from saari.snowball import snowball as _snowball
 from saari.sources import openalex as oa
 
@@ -66,12 +74,19 @@ def _to_card(p: Paper, include_excerpt: bool = False) -> PaperCard:
 
 @mcp.tool()
 def project_info() -> dict[str, Any]:
-    """Report the active saaristo project root, key paths, and corpus counts by status."""
+    """Report the active saaristo project root, key paths, corpus counts, and pipeline state.
+
+    `pipeline` tells the agent which operations are ready to run:
+    - `embedded`: how many papers have vectors (needed for query/similar/project/canvas)
+    - `projected`: how many have 2D coords (needed for canvas)
+    """
     root = paths.project_root()
     with db.connect(paths.db_path(root)) as con:
         n_papers = con.execute("SELECT COUNT(*) FROM paper").fetchone()[0]
         n_searches = con.execute("SELECT COUNT(*) FROM search").fetchone()[0]
         by_status = db.count_by_status(con)
+        n_embedded = con.execute("SELECT COUNT(*) FROM paper_embedding_meta").fetchone()[0]
+        n_projected = con.execute("SELECT COUNT(*) FROM paper_projection").fetchone()[0]
     return {
         "root": str(root),
         "db": str(paths.db_path(root)),
@@ -80,6 +95,10 @@ def project_info() -> dict[str, Any]:
         "n_papers": n_papers,
         "n_searches": n_searches,
         "by_status": by_status,
+        "pipeline": {
+            "embedded": n_embedded,
+            "projected": n_projected,
+        },
     }
 
 
@@ -402,6 +421,165 @@ def query(
             }
             for p in papers
         ],
+    }
+
+
+@mcp.tool()
+def papers_similar(
+    paper_id: str,
+    k: int = 10,
+    status: str | None = None,
+    include_excerpt: bool = True,
+) -> dict[str, Any]:
+    """Find papers most similar to a seed paper (cosine over embeddings).
+
+    The seed must already be embedded. Returns ranked PaperCards, seed excluded.
+    Great after triaging a strong include — "find more like this".
+    """
+    root = paths.project_root()
+    try:
+        hits = _similar_to_paper(paper_id, k=max(k * 3, k), project_root=root)
+    except ValueError as e:
+        return {"error": str(e), "papers": []}
+
+    score_by_id = {h.paper_id: h.score for h in hits}
+    with db.connect(paths.db_path(root)) as con:
+        placeholders = ",".join(["?"] * len(hits)) or "NULL"
+        sql = (
+            "SELECT p.*, "
+            "(SELECT COUNT(DISTINCT search_id) FROM search_result sr WHERE sr.paper_id = p.id) AS seen_in "
+            f"FROM paper p WHERE p.id IN ({placeholders})"
+        )
+        args: list[Any] = [h.paper_id for h in hits]
+        if status is not None:
+            sql += " AND p.status = ?"
+            args.append(status)
+        rows = con.execute(sql, args).fetchall()
+        papers = sorted(
+            (db._row_to_paper(r) for r in rows),
+            key=lambda p: score_by_id.get(p.id, 0.0),
+            reverse=True,
+        )[:k]
+
+    return {
+        "seed": paper_id,
+        "n": len(papers),
+        "papers": [
+            {
+                **_to_card(p, include_excerpt=include_excerpt).model_dump(),
+                "score": round(score_by_id[p.id], 4),
+            }
+            for p in papers
+        ],
+    }
+
+
+@mcp.tool()
+def project(
+    method: str = "umap",
+    n_neighbors: int = 15,
+    min_dist: float = 0.1,
+) -> dict[str, Any]:
+    """Project embedded papers to 2D (UMAP by default; numpy-SVD PCA fallback).
+
+    Persists to paper_projection. Prerequisite: `embed`.
+    Returns `{n_points, method, params, x_range, y_range}`.
+    """
+    r = _project_corpus(
+        method=method,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        project_root=paths.project_root(),
+    )
+    return {
+        "n_points": r.n_points,
+        "method": r.method,
+        "params": r.params,
+        "x_range": r.x_range,
+        "y_range": r.y_range,
+        "note": r.note,
+    }
+
+
+@mcp.tool()
+def canvas(
+    format: str = "both",
+    status: str | None = None,
+    out: str | None = None,
+) -> dict[str, Any]:
+    """Render the corpus landscape as an Obsidian .canvas file and/or a standalone HTML viewer.
+
+    `format`: obsidian | html | both.
+    Prerequisite: `embed` + `project`. Artifacts default to `papers/landscape.*`.
+    HTML is self-contained (no external deps); open directly in a browser.
+    """
+    root = paths.project_root()
+    default_dir = paths.papers_dir(root)
+    results: dict[str, Any] = {}
+
+    if format in ("obsidian", "both"):
+        target = Path(out) if out and format == "obsidian" else default_dir / "landscape.canvas"
+        results["obsidian"] = _canvas_mod.write_obsidian_canvas(
+            target, status=status, project_root=root
+        )
+    if format in ("html", "both"):
+        target = Path(out) if out and format == "html" else default_dir / "landscape.html"
+        results["html"] = _canvas_mod.write_html_viewer(
+            target, status=status, project_root=root
+        )
+    return results
+
+
+@mcp.tool()
+def export_bibtex(
+    status: str | None = "included",
+    out: str | None = None,
+) -> dict[str, Any]:
+    """Export papers to a BibTeX file for the manuscript.
+
+    Defaults to status='included' and writes to `papers/refs.bib`.
+    Citation keys follow `<firstauthorlastname><year><firsttitleword>`.
+    Abstracts longer than 1500 chars or containing publisher front-matter
+    noise markers are dropped from the entry (preserves a clean .bib file).
+    """
+    root = paths.project_root()
+    target = Path(out) if out else paths.papers_dir(root) / "refs.bib"
+    r = _export_bibtex(target, status_filter=status, project_root=root)
+    return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+
+@mcp.tool()
+def refresh() -> dict[str, Any]:
+    """One-shot: embed new papers, re-project, regenerate canvas artifacts.
+
+    Use after `search` / `snowball` to bring the corpus landscape up to date.
+    Returns per-stage counts + artifact paths.
+    """
+    root = paths.project_root()
+    e = _embed_papers(only_missing=True, project_root=root)
+    p = _project_corpus(project_root=root)
+    if p.note:
+        return {"embed": e.__dict__, "project": {"note": p.note}, "canvas": None}
+    papers_dir = paths.papers_dir(root)
+    oc = _canvas_mod.write_obsidian_canvas(
+        papers_dir / "landscape.canvas", project_root=root
+    )
+    hv = _canvas_mod.write_html_viewer(
+        papers_dir / "landscape.html", project_root=root
+    )
+    return {
+        "embed": {
+            "n_embedded": e.n_embedded,
+            "n_skipped": e.n_skipped,
+            "elapsed_sec": round(e.elapsed_sec, 3),
+        },
+        "project": {
+            "n_points": p.n_points,
+            "method": p.method,
+            "x_range": p.x_range,
+            "y_range": p.y_range,
+        },
+        "canvas": {"obsidian": oc, "html": hv},
     }
 
 
