@@ -1,0 +1,494 @@
+from __future__ import annotations
+
+import json as _json
+from enum import Enum
+from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from saari import db, paths
+from saari.models import Paper
+from saari.snowball import snowball as _snowball
+from saari.sources import openalex as openalex_src
+
+app = typer.Typer(
+    help="saari - agent-driven literature review toolkit (saaristo project)",
+    no_args_is_help=True,
+)
+papers_app = typer.Typer(help="Papers in the local DB", no_args_is_help=True)
+searches_app = typer.Typer(help="Past searches", no_args_is_help=True)
+app.add_typer(papers_app, name="papers")
+app.add_typer(searches_app, name="searches")
+
+console = Console()
+
+
+class OutputFormat(str, Enum):
+    table = "table"
+    cards = "cards"
+    md = "md"
+    json = "json"
+
+
+def _resolve_root() -> Path:
+    try:
+        return paths.project_root()
+    except paths.ProjectNotFoundError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+
+
+@app.command()
+def init(
+    path: Annotated[Path, typer.Argument(help="Project directory (default: cwd)")] = Path.cwd(),
+) -> None:
+    """Initialize a saaristo project in PATH (creates .saaristo/ and papers/)."""
+    existing = paths.find_project_root(path)
+    if existing and existing == path.resolve():
+        console.print(f"[yellow]Already a saaristo project:[/] {existing}")
+        return
+    root = paths.init_project(path)
+    console.print(f"[green]Initialized saaristo project at[/] {root}")
+    console.print(f"  {root / '.saaristo'}/      tool-owned state (db, raw/)")
+    console.print(f"  {root / 'papers'}/        full-text PDFs and user-visible files")
+
+
+@app.command()
+def where() -> None:
+    """Print the active project root and key paths + corpus summary."""
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        counts = db.count_by_status(con)
+        n_searches = con.execute("SELECT COUNT(*) FROM search").fetchone()[0]
+    console.print(f"[bold]project:[/] {root}")
+    console.print(f"  db:      {paths.db_path(root)}")
+    console.print(f"  raw:     {paths.raw_dir(root)}")
+    console.print(f"  papers:  {paths.papers_dir(root)}")
+    if counts:
+        total = sum(counts.values())
+        breakdown = "  ".join(f"{k}={v}" for k, v in counts.items())
+        console.print(f"[dim]corpus:[/] {total} papers  ({breakdown})  searches={n_searches}")
+
+
+@app.command()
+def search(
+    query: Annotated[str, typer.Argument(help="Search query")],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 25,
+    year_from: Annotated[int | None, typer.Option("--year-from")] = None,
+    year_to: Annotated[int | None, typer.Option("--year-to")] = None,
+) -> None:
+    """Search OpenAlex and persist results into the current project."""
+    root = _resolve_root()
+    console.print(f"[dim]OpenAlex search:[/] {query!r}  limit={limit}  @ {root}")
+    fetched = openalex_src.search(
+        query, limit=limit, year_from=year_from, year_to=year_to, project_root=root
+    )
+    if not fetched:
+        console.print("[yellow]No results.[/]")
+        return
+
+    with db.connect(paths.db_path(root)) as con:
+        for paper, raw_path in fetched:
+            db.upsert_paper(con, paper, raw_path=raw_path)
+        search_id = db.record_search(
+            con,
+            source="openalex",
+            query=query,
+            params={"limit": limit, "year_from": year_from, "year_to": year_to},
+            paper_ids=[p.id for p, _ in fetched],
+        )
+
+    console.print(f"[green]Persisted[/] {len(fetched)} papers (search #{search_id})")
+    _print_paper_table([p for p, _ in fetched])
+
+
+@app.command()
+def snowball(
+    paper_id: Annotated[str, typer.Argument(help="Seed paper id (openalex:Wxxx, DOI, arxiv, or PMID)")],
+    direction: Annotated[str, typer.Option("--direction", "-d", help="backward | forward | both")] = "both",
+    max_per_direction: Annotated[int, typer.Option("--max", "-n", help="Max papers per direction")] = 25,
+) -> None:
+    """Expand a seed paper's citation neighbors into the project.
+
+    backward: papers this one cites (via OpenAlex `referenced_works`)
+    forward:  papers that cite this one (via OpenAlex `cites:` filter)
+    """
+    root = _resolve_root()
+    result = _snowball(
+        paper_id,
+        direction=direction,
+        max_per_direction=max_per_direction,
+        project_root=root,
+    )
+    console.print(
+        f"[green]Snowball {result.direction}[/] from {result.seed_paper_id}: "
+        f"fetched={result.n_fetched}, new={result.n_new} "
+        f"([cyan]backward={len(result.backward_paper_ids)}[/] / "
+        f"[magenta]forward={len(result.forward_paper_ids)}[/])"
+    )
+    if result.skipped_reason:
+        console.print(f"[yellow]note:[/] {result.skipped_reason}")
+
+
+@app.command()
+def screen(
+    paper_id: Annotated[str, typer.Argument(help="Paper id, DOI, arxiv, or PMID")],
+    decision: Annotated[str, typer.Argument(help="include | exclude | maybe | candidate")],
+    note: Annotated[str | None, typer.Option("--note", help="Optional screening reason")] = None,
+) -> None:
+    """Mark a paper as included / excluded / maybe (or reset to candidate)."""
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        try:
+            ok = db.set_screening(con, paper_id, decision, note=note)
+        except ValueError as e:
+            console.print(f"[red]error:[/] {e}")
+            raise typer.Exit(2) from None
+    if not ok:
+        console.print(f"[red]Not found:[/] {paper_id}")
+        raise typer.Exit(1)
+    note_s = f" ({note})" if note else ""
+    console.print(f"[green]{decision}[/] {paper_id}{note_s}")
+
+
+@app.command()
+def triage(
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    min_citations: Annotated[int | None, typer.Option("--min-citations", "-c")] = None,
+    year_from: Annotated[int | None, typer.Option("--year-from")] = None,
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f", help="Output format")] = OutputFormat.md,
+) -> None:
+    """Show the top undecided (candidate) papers as a triage checklist.
+
+    Default output is markdown: one paper per block with `[ ]` checkbox,
+    title, meta, seen_in count, and abstract excerpt. Designed to be
+    scannable by agents and humans, and easy to paste into chat.
+    Once you decide, run `saari screen <id> include|exclude [--note ...]`.
+    """
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        counts = db.count_by_status(con)
+        papers = db.list_papers(
+            con,
+            limit=limit,
+            status="candidate",
+            min_citations=min_citations,
+            year_from=year_from,
+            order_by="COALESCE(cited_by_count, 0) DESC",
+        )
+    n_candidates = counts.get("candidate", 0)
+
+    if fmt is OutputFormat.json:
+        console.print_json(
+            data={
+                "n_candidates": n_candidates,
+                "limit": limit,
+                "papers": [_paper_card_dict(p) for p in papers],
+            }
+        )
+        return
+
+    if fmt is OutputFormat.md:
+        print(_render_md_triage(papers, n_candidates, limit))
+        return
+
+    console.print(
+        f"[bold]Triage[/] — showing {len(papers)} of {n_candidates} candidates"
+    )
+    if fmt is OutputFormat.cards:
+        _print_paper_cards(papers)
+    else:
+        _print_paper_table(papers)
+
+
+@papers_app.command("list")
+def papers_list(
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    offset: Annotated[int, typer.Option("--offset")] = 0,
+    status: Annotated[str | None, typer.Option("--status", help="candidate|included|excluded|maybe")] = None,
+    year_from: Annotated[int | None, typer.Option("--year-from")] = None,
+    year_to: Annotated[int | None, typer.Option("--year-to")] = None,
+    min_citations: Annotated[int | None, typer.Option("--min-citations", "-c")] = None,
+    grep: Annotated[str | None, typer.Option("--grep", "-g", help="Title substring (case-insensitive)")] = None,
+    seen_in_at_least: Annotated[int | None, typer.Option("--seen-in-at-least", help="Paper appeared in at least N searches")] = None,
+    sort: Annotated[str, typer.Option("--sort", help="recent|cited|seen_in")] = "recent",
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f")] = OutputFormat.table,
+) -> None:
+    """List papers in the project DB. Filters are composable; outputs are switchable."""
+    order_by = {
+        "recent": "first_seen_at DESC",
+        "cited": "COALESCE(cited_by_count, 0) DESC",
+        "seen_in": "seen_in DESC, COALESCE(cited_by_count, 0) DESC",
+    }.get(sort, "first_seen_at DESC")
+
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        papers = db.list_papers(
+            con,
+            limit=limit,
+            offset=offset,
+            status=status,
+            year_from=year_from,
+            year_to=year_to,
+            min_citations=min_citations,
+            title_grep=grep,
+            seen_in_at_least=seen_in_at_least,
+            order_by=order_by,
+        )
+
+    if not papers:
+        console.print("[dim]No matching papers.[/]")
+        return
+
+    if fmt is OutputFormat.json:
+        console.print_json(data=[_paper_card_dict(p) for p in papers])
+        return
+    if fmt is OutputFormat.md:
+        print(_render_md_triage(papers, len(papers), len(papers), heading="Papers"))
+        return
+    if fmt is OutputFormat.cards:
+        _print_paper_cards(papers)
+        return
+
+    _print_paper_table(papers)
+
+
+@papers_app.command("show")
+def papers_show(
+    paper_id: Annotated[str, typer.Argument(help="Paper id, DOI, arxiv ID, or PMID")],
+) -> None:
+    """Show one paper in full detail (normalized JSON)."""
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        paper = db.get_paper(con, paper_id)
+    if not paper:
+        console.print(f"[red]Not found:[/] {paper_id}")
+        raise typer.Exit(1)
+    console.print(paper.model_dump_json(indent=2))
+
+
+@papers_app.command("links")
+def papers_links(
+    paper_id: Annotated[str, typer.Argument(help="Paper id, DOI, arxiv ID, or PMID")],
+) -> None:
+    """Show all known hosting locations for a paper (publisher, arXiv, PMC, repos)."""
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        paper = db.get_paper(con, paper_id)
+    if not paper:
+        console.print(f"[red]Not found:[/] {paper_id}")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]{paper.title}[/]")
+    meta = []
+    if paper.year:
+        meta.append(str(paper.year))
+    if paper.cited_by_count is not None:
+        meta.append(f"cited={paper.cited_by_count}")
+    if paper.oa_status:
+        meta.append(f"oa={paper.oa_status}")
+    if paper.doi:
+        meta.append(f"doi={paper.doi}")
+    if paper.arxiv_id:
+        meta.append(f"arxiv={paper.arxiv_id}")
+    if paper.pmid:
+        meta.append(f"pmid={paper.pmid}")
+    if paper.pmcid:
+        meta.append(f"pmcid={paper.pmcid}")
+    if meta:
+        console.print("[dim]" + "  ".join(meta) + "[/]")
+
+    if not paper.locations:
+        console.print(
+            "[dim](no locations recorded — pre-enrichment record; re-search to refresh)[/]"
+        )
+        return
+
+    t = Table(show_header=True, header_style="bold")
+    t.add_column("source")
+    t.add_column("version")
+    t.add_column("oa")
+    t.add_column("pdf")
+    t.add_column("url", overflow="fold")
+    for loc in paper.locations:
+        t.add_row(
+            loc.source_name or "",
+            loc.version or "",
+            "✓" if loc.is_oa else "",
+            "✓" if loc.pdf_url else "",
+            loc.pdf_url or loc.landing_page_url or "",
+        )
+    console.print(t)
+
+
+@papers_app.command("raw")
+def papers_raw(
+    paper_id: Annotated[str, typer.Argument(help="Paper id, DOI, arxiv ID, or PMID")],
+) -> None:
+    """Print the raw API response for a paper (as captured at fetch time)."""
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        raw_path = db.get_raw_path(con, paper_id)
+    if not raw_path:
+        console.print(
+            f"[red]No raw payload for:[/] {paper_id}  "
+            "[dim](pre-enrichment record; re-search to capture)[/]"
+        )
+        raise typer.Exit(1)
+    full = root / raw_path
+    if not full.exists():
+        console.print(f"[red]Raw file missing:[/] {full}")
+        raise typer.Exit(1)
+    console.print(full.read_text())
+
+
+@searches_app.command("list")
+def searches_list(
+    limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+) -> None:
+    """List past searches and snowball events."""
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        rows = db.list_searches(con, limit=limit)
+    if not rows:
+        console.print("[dim]No searches yet.[/]")
+        return
+    t = Table(show_header=True, header_style="bold")
+    t.add_column("id")
+    t.add_column("source")
+    t.add_column("query")
+    t.add_column("n")
+    t.add_column("created_at")
+    for r in rows:
+        t.add_row(
+            str(r["id"]),
+            r["source"],
+            r["query"],
+            str(r["n_returned"]),
+            r["created_at"],
+        )
+    console.print(t)
+
+
+# ---------- formatting helpers ----------
+
+
+def _paper_flags(p: Paper) -> list[str]:
+    flags = []
+    if p.arxiv_id:
+        flags.append("arxiv")
+    if p.pmcid:
+        flags.append("pmc")
+    if p.oa_status and p.oa_status not in ("closed", None):
+        flags.append(p.oa_status)
+    if p.abstract_suspect:
+        flags.append("abs?")
+    if p.status != "candidate":
+        flags.append(p.status)
+    return flags
+
+
+def _paper_card_dict(p: Paper) -> dict:
+    return {
+        "id": p.id,
+        "title": p.title,
+        "year": p.year,
+        "cited_by_count": p.cited_by_count,
+        "venue": p.venue,
+        "doi": p.doi,
+        "arxiv_id": p.arxiv_id,
+        "oa_status": p.oa_status,
+        "status": p.status,
+        "seen_in": p.seen_in,
+        "abstract_suspect": p.abstract_suspect,
+        "abstract_excerpt": (p.abstract or "")[:240],
+    }
+
+
+def _abstract_excerpt(abstract: str | None, n: int = 280) -> str:
+    if not abstract:
+        return ""
+    s = " ".join(abstract.split())
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
+def _render_md_triage(
+    papers: list[Paper],
+    n_candidates: int,
+    limit: int,
+    heading: str = "Triage",
+) -> str:
+    lines: list[str] = []
+    lines.append(f"## {heading} — {len(papers)} of {n_candidates} shown")
+    lines.append("")
+    for p in papers:
+        meta_bits = []
+        if p.year is not None:
+            meta_bits.append(str(p.year))
+        if p.cited_by_count is not None:
+            meta_bits.append(f"cited={p.cited_by_count}")
+        if p.venue:
+            meta_bits.append(f"*{p.venue}*")
+        meta = ", ".join(meta_bits)
+        flags = _paper_flags(p)
+        flag_str = f"  ·  flags: {' '.join(flags)}" if flags else ""
+        seen = f"  ·  seen_in={p.seen_in}" if p.seen_in > 1 else ""
+        lines.append(f"- [ ] `{p.id}` — **{p.title}**  ({meta}){seen}{flag_str}")
+        excerpt = _abstract_excerpt(p.abstract)
+        if excerpt:
+            lines.append(f"  > {excerpt}")
+        lines.append("")
+    lines.append("---")
+    lines.append("Commit decisions with: `saari screen <id> include|exclude|maybe [--note ...]`")
+    return "\n".join(lines)
+
+
+def _print_paper_cards(papers: list[Paper]) -> None:
+    for p in papers:
+        meta = []
+        if p.year is not None:
+            meta.append(str(p.year))
+        if p.cited_by_count is not None:
+            meta.append(f"c={p.cited_by_count}")
+        if p.seen_in > 1:
+            meta.append(f"seen_in={p.seen_in}")
+        flags = _paper_flags(p)
+        flag_str = f"  [{' '.join(flags)}]" if flags else ""
+        console.print(f"[bold]{p.id}[/]  [dim]{'  '.join(meta)}[/]{flag_str}")
+        console.print(f"  {p.title}")
+        if p.venue:
+            console.print(f"  [dim]{p.venue}[/]")
+        excerpt = _abstract_excerpt(p.abstract, 200)
+        if excerpt:
+            console.print(f"  [dim italic]{excerpt}[/]")
+        console.print()
+
+
+def _print_paper_table(papers: list[Paper]) -> None:
+    t = Table(show_header=True, header_style="bold")
+    t.add_column("id", overflow="fold", max_width=22)
+    t.add_column("year")
+    t.add_column("cited")
+    t.add_column("seen")
+    t.add_column("flags")
+    t.add_column("title", overflow="fold")
+    t.add_column("venue", overflow="fold", max_width=28)
+    for p in papers:
+        flags = _paper_flags(p)
+        t.add_row(
+            p.id,
+            str(p.year or ""),
+            str(p.cited_by_count or ""),
+            str(p.seen_in) if p.seen_in > 1 else "",
+            " ".join(flags),
+            p.title,
+            p.venue or "",
+        )
+    console.print(t)
+
+
+if __name__ == "__main__":
+    app()

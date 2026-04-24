@@ -1,0 +1,340 @@
+"""MCP server exposing saari skills to agents (Claude Code, custom agents, etc.).
+
+Run via `saari-mcp` (stdio). The host (Claude Code) typically starts the server with
+a project directory as cwd; saari then resolves the project root by walking up for
+`.saaristo/`, or honors `SAARI_PROJECT_ROOT`.
+
+Every mutating tool persists to the project DB and writes raw API payloads to
+`.saaristo/raw/<source>/<id>.json` — the agent can `Read` those directly when it
+wants ground-truth JSON instead of normalized fields.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+from pydantic import BaseModel
+
+from saari import db, paths
+from saari.models import Paper
+from saari.snowball import snowball as _snowball
+from saari.sources import openalex as oa
+
+mcp = FastMCP("saari")
+
+
+class PaperCard(BaseModel):
+    """Compact paper summary — returned from list / search / triage tools so
+    multi-paper responses stay small. Call `paper_show` for the full record."""
+
+    id: str
+    title: str
+    year: int | None = None
+    cited_by_count: int | None = None
+    venue: str | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
+    oa_status: str | None = None
+    status: str = "candidate"
+    seen_in: int = 0
+    abstract_suspect: bool = False
+    abstract_excerpt: str | None = None
+
+
+def _to_card(p: Paper, include_excerpt: bool = False) -> PaperCard:
+    excerpt: str | None = None
+    if include_excerpt and p.abstract:
+        s = " ".join(p.abstract.split())
+        excerpt = s if len(s) <= 240 else s[:239].rstrip() + "…"
+    return PaperCard(
+        id=p.id,
+        title=p.title,
+        year=p.year,
+        cited_by_count=p.cited_by_count,
+        venue=p.venue,
+        doi=p.doi,
+        arxiv_id=p.arxiv_id,
+        oa_status=p.oa_status,
+        status=p.status,
+        seen_in=p.seen_in,
+        abstract_suspect=p.abstract_suspect,
+        abstract_excerpt=excerpt,
+    )
+
+
+@mcp.tool()
+def project_info() -> dict[str, Any]:
+    """Report the active saaristo project root, key paths, and corpus counts by status."""
+    root = paths.project_root()
+    with db.connect(paths.db_path(root)) as con:
+        n_papers = con.execute("SELECT COUNT(*) FROM paper").fetchone()[0]
+        n_searches = con.execute("SELECT COUNT(*) FROM search").fetchone()[0]
+        by_status = db.count_by_status(con)
+    return {
+        "root": str(root),
+        "db": str(paths.db_path(root)),
+        "raw_dir": str(paths.raw_dir(root)),
+        "papers_dir": str(paths.papers_dir(root)),
+        "n_papers": n_papers,
+        "n_searches": n_searches,
+        "by_status": by_status,
+    }
+
+
+@mcp.tool()
+def search(
+    query: str,
+    limit: int = 25,
+    year_from: int | None = None,
+    year_to: int | None = None,
+) -> dict[str, Any]:
+    """Search OpenAlex and persist results into the project.
+
+    Returns a summary (`search_id`, counts, `paper_ids`). Use `papers_list`
+    or `paper_show` to read the actual paper data.
+    """
+    root = paths.project_root()
+    fetched = oa.search(
+        query, limit=limit, year_from=year_from, year_to=year_to, project_root=root
+    )
+    paper_ids = [p.id for p, _ in fetched]
+
+    existing_ids: set[str] = set()
+    with db.connect(paths.db_path(root)) as con:
+        if paper_ids:
+            rows = con.execute(
+                f"SELECT id FROM paper WHERE id IN ({','.join(['?'] * len(paper_ids))})",
+                paper_ids,
+            ).fetchall()
+            existing_ids = {row["id"] for row in rows}
+        for paper, raw_path in fetched:
+            db.upsert_paper(con, paper, raw_path=raw_path)
+        search_id = db.record_search(
+            con,
+            source="openalex",
+            query=query,
+            params={"limit": limit, "year_from": year_from, "year_to": year_to},
+            paper_ids=paper_ids,
+        )
+
+    return {
+        "search_id": search_id,
+        "source": "openalex",
+        "query": query,
+        "n_fetched": len(fetched),
+        "n_new": sum(1 for pid in paper_ids if pid not in existing_ids),
+        "n_duplicate": sum(1 for pid in paper_ids if pid in existing_ids),
+        "paper_ids": paper_ids,
+    }
+
+
+@mcp.tool()
+def papers_list(
+    limit: int = 20,
+    offset: int = 0,
+    status: str | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    min_citations: int | None = None,
+    title_grep: str | None = None,
+    seen_in_at_least: int | None = None,
+    sort: str = "recent",
+    include_excerpt: bool = False,
+) -> dict[str, Any]:
+    """List papers in the project DB with composable filters. Returns compact PaperCards.
+
+    Filters:
+    - `status`: candidate | included | excluded | maybe
+    - `year_from` / `year_to`: inclusive
+    - `min_citations`: minimum cited_by_count
+    - `title_grep`: case-insensitive title substring
+    - `seen_in_at_least`: paper appeared in at least N distinct searches (useful for relevance)
+
+    `sort`: recent (first_seen_at desc, default) | cited (citations desc) | seen_in (overlap desc).
+    `include_excerpt`: include up to 240 chars of abstract in each card. Call `paper_show` for full.
+    """
+    root = paths.project_root()
+    order_by = {
+        "recent": "first_seen_at DESC",
+        "cited": "COALESCE(cited_by_count, 0) DESC",
+        "seen_in": "seen_in DESC, COALESCE(cited_by_count, 0) DESC",
+    }.get(sort, "first_seen_at DESC")
+
+    with db.connect(paths.db_path(root)) as con:
+        papers = db.list_papers(
+            con,
+            limit=limit,
+            offset=offset,
+            status=status,
+            year_from=year_from,
+            year_to=year_to,
+            min_citations=min_citations,
+            title_grep=title_grep,
+            seen_in_at_least=seen_in_at_least,
+            order_by=order_by,
+        )
+    return {
+        "n": len(papers),
+        "papers": [_to_card(p, include_excerpt=include_excerpt).model_dump() for p in papers],
+    }
+
+
+@mcp.tool()
+def triage(
+    limit: int = 20,
+    min_citations: int | None = None,
+    year_from: int | None = None,
+    seen_in_at_least: int | None = None,
+) -> dict[str, Any]:
+    """Return the top undecided (status='candidate') papers as compact cards with
+    abstract excerpts — sorted by citation count. The triage workflow: call this,
+    scan the cards, then call `screen` for each decision.
+
+    Returns `{n_candidates, papers}`. `n_candidates` is the full pool (not the
+    `limit`-slice), so the agent knows how much work remains.
+    """
+    root = paths.project_root()
+    with db.connect(paths.db_path(root)) as con:
+        counts = db.count_by_status(con)
+        papers = db.list_papers(
+            con,
+            limit=limit,
+            status="candidate",
+            min_citations=min_citations,
+            year_from=year_from,
+            seen_in_at_least=seen_in_at_least,
+            order_by="COALESCE(cited_by_count, 0) DESC",
+        )
+    return {
+        "n_candidates": counts.get("candidate", 0),
+        "shown": len(papers),
+        "papers": [_to_card(p, include_excerpt=True).model_dump() for p in papers],
+    }
+
+
+@mcp.tool()
+def screen(
+    paper_id: str,
+    decision: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Mark a paper as included / excluded / maybe (or reset to candidate).
+
+    Accepts aliases: include→included, exclude/reject→excluded, keep/yes→included,
+    no→excluded, reset→candidate.
+
+    Returns `{paper_id, status, ok}`. Status is the normalized stored value.
+    """
+    root = paths.project_root()
+    normalized = db.normalize_status(decision)
+    with db.connect(paths.db_path(root)) as con:
+        ok = db.set_screening(con, paper_id, normalized, note=note)
+    return {"paper_id": paper_id, "status": normalized, "ok": ok}
+
+
+@mcp.tool()
+def paper_show(paper_id: str) -> dict[str, Any] | None:
+    """Return the full Paper record (authors, abstract, references, locations, etc.).
+
+    Accepts an OpenAlex id (`openalex:Wxxx` or bare `Wxxx`), DOI, arxiv ID, or PMID.
+    """
+    root = paths.project_root()
+    with db.connect(paths.db_path(root)) as con:
+        p = db.get_paper(con, paper_id)
+    return p.model_dump(mode="json") if p else None
+
+
+@mcp.tool()
+def paper_links(paper_id: str) -> dict[str, Any] | None:
+    """Return all known hosting locations — publisher page, arXiv, PMC, repositories.
+
+    Best source for "where can I get the PDF?" — look for `locations[].pdf_url`
+    where `is_oa` is True.
+    """
+    root = paths.project_root()
+    with db.connect(paths.db_path(root)) as con:
+        p = db.get_paper(con, paper_id)
+    if not p:
+        return None
+    return {
+        "id": p.id,
+        "title": p.title,
+        "doi": p.doi,
+        "arxiv_id": p.arxiv_id,
+        "pmid": p.pmid,
+        "pmcid": p.pmcid,
+        "oa_status": p.oa_status,
+        "landing_page_url": p.landing_page_url,
+        "pdf_url": p.pdf_url,
+        "locations": [loc.model_dump() for loc in p.locations],
+    }
+
+
+@mcp.tool()
+def paper_raw(paper_id: str) -> dict[str, Any] | None:
+    """Return the raw source API response (OpenAlex JSON) captured at fetch time.
+
+    Useful when the normalized fields miss nuance, when OpenAlex mis-merged a
+    record, or when you want to see fields we don't yet extract.
+    Response includes both the filesystem `path` (you can `Read` it) and the `content`.
+    """
+    root = paths.project_root()
+    with db.connect(paths.db_path(root)) as con:
+        raw_path = db.get_raw_path(con, paper_id)
+    if not raw_path:
+        return None
+    full = root / raw_path
+    if not full.exists():
+        return None
+    return {"path": str(full), "content": full.read_text()}
+
+
+@mcp.tool()
+def searches_list(limit: int = 20) -> dict[str, Any]:
+    """List past searches and snowball events in this project."""
+    root = paths.project_root()
+    with db.connect(paths.db_path(root)) as con:
+        rows = db.list_searches(con, limit=limit)
+    return {"searches": rows}
+
+
+@mcp.tool()
+def snowball(
+    paper_id: str,
+    direction: str = "both",
+    max_per_direction: int = 25,
+) -> dict[str, Any]:
+    """Expand a seed paper's citation neighbors into the project DB.
+
+    - `backward`: papers the seed cites (from OpenAlex `referenced_works`)
+    - `forward`:  papers that cite the seed (via OpenAlex `cites:` filter)
+    - `both`:     both, up to `max_per_direction` each
+
+    Often the single highest-leverage move after finding one good seed —
+    e.g. a survey paper gets you its whole bibliography in one call.
+    """
+    root = paths.project_root()
+    r = _snowball(
+        paper_id,
+        direction=direction,
+        max_per_direction=max_per_direction,
+        project_root=root,
+    )
+    return {
+        "seed": r.seed_paper_id,
+        "direction": r.direction,
+        "n_fetched": r.n_fetched,
+        "n_new": r.n_new,
+        "backward_paper_ids": r.backward_paper_ids,
+        "forward_paper_ids": r.forward_paper_ids,
+        "skipped_reason": r.skipped_reason,
+    }
+
+
+def main() -> None:
+    mcp.run()
+
+
+if __name__ == "__main__":
+    main()
