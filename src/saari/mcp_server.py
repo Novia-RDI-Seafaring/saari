@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from pathlib import Path
 
-from saari import canvas as _canvas_mod, db, paths
+from saari import canvas as _canvas_mod, db, openglance as _og, paths
 from saari.embed import (
     embed_papers as _embed_papers,
     query_corpus as _query_corpus,
@@ -581,6 +581,107 @@ def refresh() -> dict[str, Any]:
         },
         "canvas": {"obsidian": oc, "html": hv},
     }
+
+
+# ---------- openglance bridge ----------
+
+
+@mcp.tool()
+def openglance_init(out: str | None = None) -> dict[str, Any]:
+    """Scaffold (or refresh) an openglance vault for this project.
+
+    Vault path is `[openglance].vault` from `.saaristo/config.toml`, defaulting
+    to `papers/openglance/`. Creates `wiki/` + `README.md` + `config.json`.
+    Idempotent.
+    """
+    return _og.init_vault(
+        out=Path(out) if out else None, project_root=paths.project_root()
+    )
+
+
+@mcp.tool()
+def openglance_export(
+    status: str | None = None,
+    only_missing: bool = False,
+) -> dict[str, Any]:
+    """Auto-write one renderable wiki page per paper in the corpus.
+
+    Tags include flat `paper` + screening status, plus hierarchical
+    `<domain>/<field>/<topic>` derived from OpenAlex `topics` (read on the fly
+    from raw JSON files). Citation edges restricted to corpus members become
+    `[[wiki-links]]` for openglance's graph view.
+    """
+    r = _og.export_corpus_papers(
+        status=status, only_missing=only_missing, project_root=paths.project_root()
+    )
+    return {
+        "vault": r.vault,
+        "n_papers": r.n_papers,
+        "n_pages_written": r.n_pages_written,
+        "n_pages_skipped": r.n_pages_skipped,
+    }
+
+
+@mcp.tool()
+def openglance_page_write(
+    slug: str,
+    title: str,
+    body: str,
+    type: str = "concept",
+    tags: list[str] | None = None,
+    sources: list[str] | None = None,
+    url: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Write an agent-authored wiki page (topic, synthesis, comparison, etc.).
+
+    `body` is markdown without frontmatter. Convention: include a `## TLDR`
+    section first — openglance uses it as the card teaser.
+
+    `type` ∈ source | entity | concept | synthesis | comparison | question.
+    """
+    return _og.write_page(
+        slug, title, body,
+        type=type, tags=tags, sources=sources, url=url, overwrite=overwrite,
+        project_root=paths.project_root(),
+    )
+
+
+@mcp.tool()
+def openglance_page_list(
+    type: str | None = None,
+    tag_substring: str | None = None,
+) -> dict[str, Any]:
+    """List wiki pages with type / tag-substring filters."""
+    pages = _og.list_pages(
+        type=type, tag_substring=tag_substring, project_root=paths.project_root()
+    )
+    return {"n": len(pages), "pages": pages}
+
+
+@mcp.tool()
+def openglance_page_read(slug: str) -> dict[str, Any] | None:
+    """Read a wiki page; returns frontmatter + body."""
+    return _og.read_page(slug, project_root=paths.project_root())
+
+
+@mcp.tool()
+def openglance_page_delete(slug: str) -> dict[str, Any]:
+    """Delete a wiki page."""
+    ok = _og.delete_page(slug, project_root=paths.project_root())
+    return {"slug": slug, "ok": ok}
+
+
+@mcp.tool()
+def openglance_build() -> dict[str, Any]:
+    """Run the openglance build to regenerate the renderer's data files."""
+    return _og.build(project_root=paths.project_root())
+
+
+@mcp.tool()
+def openglance_serve_command() -> dict[str, Any]:
+    """Return the argv to start the openglance dev server (for the user/agent to run)."""
+    return _og.serve_command(project_root=paths.project_root())
 
 
 def main() -> None:

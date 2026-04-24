@@ -102,6 +102,14 @@ Skills marked **live** are implemented on both CLI (`saari <skill>`) and MCP (`s
 | `papers_similar(paper_id, k=10, status?)` | **live** — rank corpus by cosine to a seed paper's embedding; seed excluded | `{seed, n, papers}` with `score` per card |
 | `export_bibtex(status="included", out?)` | **live** — BibTeX export with `<author><year><word>` keys; strips abstract pollution and caps length at 1500 chars | `{path, n_entries, format}` |
 | `refresh()` | **live** — one-shot: embed (only_missing) → project → canvas(both) | per-stage summary |
+| `openglance_init(out?)` | **live** — scaffold an [openglance](https://github.com/graceful-ai/openglance) vault: `wiki/` + `README.md` + `config.json`. Path from `[openglance].vault` config; default `papers/openglance/`. | `{path, created}` |
+| `openglance_export(status?, only_missing?)` | **live** — auto-write one wiki page per paper. Tags: flat (`paper`, `<status>`) + hierarchical from OpenAlex topics (`<domain>/<field>/<topic>`). Citation edges within corpus become `[[wiki-links]]`. | `{vault, n_papers, n_pages_written}` |
+| `openglance_page_write(slug, title, body, type, tags?, sources?, url?)` | **live** — agent-authored wiki page (topic / synthesis / comparison / question). Convention: include a `## TLDR` first. | `{path, slug, type}` |
+| `openglance_page_list(type?, tag_substring?)` | **live** — enumerate wiki pages with frontmatter summaries | `{n, pages}` |
+| `openglance_page_read(slug)` | **live** — frontmatter + body | page or `null` |
+| `openglance_page_delete(slug)` | **live** — remove a wiki page | `{slug, ok}` |
+| `openglance_build()` | **live** — runs the openglance build over the vault's `wiki/` to refresh data files | `{ok, returncode, stdout_tail, stderr_tail}` |
+| `openglance_serve_command()` | **live** — returns the argv to start the dev server (long-lived; agent prints, user runs) | `{argv, cwd, vault}` |
 | `resolve_abstracts(only_missing=true)` | roadmap — fill bad/missing abstracts via Crossref + portal hints | `{n_resolved, n_failed}` |
 | `suggest_screening(criteria)` | roadmap — LLM-assisted triage suggestions (non-committing) | suggestions |
 | `export(format, status_filter?, out_path)` | roadmap — bibtex / json / csv | path |

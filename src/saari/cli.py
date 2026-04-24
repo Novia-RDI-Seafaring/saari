@@ -9,7 +9,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from saari import canvas as _canvas_mod, db, paths
+from saari import canvas as _canvas_mod, config as _config, db, openglance as _og, paths
 from saari.embed import (
     embed_papers as _embed_papers,
     query_corpus as _query_corpus,
@@ -27,8 +27,12 @@ app = typer.Typer(
 )
 papers_app = typer.Typer(help="Papers in the local DB", no_args_is_help=True)
 searches_app = typer.Typer(help="Past searches", no_args_is_help=True)
+openglance_app = typer.Typer(help="Openglance vault export + render", no_args_is_help=True)
+openglance_page_app = typer.Typer(help="Author / read / list / delete wiki pages", no_args_is_help=True)
+openglance_app.add_typer(openglance_page_app, name="page")
 app.add_typer(papers_app, name="papers")
 app.add_typer(searches_app, name="searches")
+app.add_typer(openglance_app, name="openglance")
 
 console = Console()
 
@@ -51,16 +55,28 @@ def _resolve_root() -> Path:
 @app.command()
 def init(
     path: Annotated[Path, typer.Argument(help="Project directory (default: cwd)")] = Path.cwd(),
+    openglance_vault: Annotated[
+        str | None,
+        typer.Option(
+            "--openglance-vault",
+            help="Path (relative to project or absolute) where openglance exports land. Default: papers/openglance",
+        ),
+    ] = None,
 ) -> None:
     """Initialize a saaristo project in PATH (creates .saaristo/ and papers/)."""
     existing = paths.find_project_root(path)
     if existing and existing == path.resolve():
         console.print(f"[yellow]Already a saaristo project:[/] {existing}")
+        if openglance_vault is not None:
+            _config.set_value("openglance.vault", openglance_vault, project_root=existing)
+            console.print(f"  set openglance vault → {openglance_vault}")
         return
-    root = paths.init_project(path)
+    root = paths.init_project(path, openglance_vault=openglance_vault)
     console.print(f"[green]Initialized saaristo project at[/] {root}")
     console.print(f"  {root / '.saaristo'}/      tool-owned state (db, raw/)")
     console.print(f"  {root / 'papers'}/        full-text PDFs and user-visible files")
+    if openglance_vault is not None:
+        console.print(f"  openglance vault: {openglance_vault}")
 
 
 @app.command()
@@ -675,6 +691,130 @@ def searches_list(
             r["created_at"],
         )
     console.print(t)
+
+
+# ---------- openglance ----------
+
+
+@openglance_app.command("init")
+def openglance_init(
+    out: Annotated[Path | None, typer.Option("--out", help="Vault path; default from config or papers/openglance")] = None,
+) -> None:
+    """Scaffold an openglance vault (idempotent). Writes README.md + config.json + wiki/."""
+    root = _resolve_root()
+    r = _og.init_vault(out=out, project_root=root)
+    msg = "[green]ready[/]" if not r["created"] else "[green]created[/]"
+    console.print(f"{msg} openglance vault at [bold]{r['path']}[/]")
+
+
+@openglance_app.command("export")
+def openglance_export(
+    status: Annotated[str | None, typer.Option("--status", help="Filter by status (default: all)")] = None,
+    only_missing: Annotated[bool, typer.Option("--only-missing/--all", help="Skip pages already on disk")] = False,
+) -> None:
+    """Export the saari corpus as openglance wiki pages (one per paper)."""
+    root = _resolve_root()
+    r = _og.export_corpus_papers(status=status, only_missing=only_missing, project_root=root)
+    console.print(
+        f"[green]Exported[/] {r.n_pages_written} pages "
+        f"(skipped {r.n_pages_skipped})  vault={r.vault}"
+    )
+
+
+@openglance_app.command("build")
+def openglance_build() -> None:
+    """Run `openglance build <vault>/wiki` to refresh the rendered data files."""
+    root = _resolve_root()
+    r = _og.build(project_root=root)
+    if r.get("ok"):
+        console.print(f"[green]built[/]  {r.get('cmd')}")
+        if r.get("stdout_tail"):
+            console.print(f"[dim]{r['stdout_tail'].strip()}[/]")
+    else:
+        console.print(f"[red]build failed[/]  rc={r.get('returncode')}")
+        console.print(f"[red]{r.get('stderr_tail', r.get('error', '')).strip()}[/]")
+        raise typer.Exit(1)
+
+
+@openglance_app.command("serve")
+def openglance_serve() -> None:
+    """Print the command to start the openglance dev server (run it yourself)."""
+    root = _resolve_root()
+    r = _og.serve_command(project_root=root)
+    console.print("[bold]To preview the vault, run:[/]")
+    console.print(f"  cd {r['cwd']} && {' '.join(r['argv'])}")
+
+
+@openglance_page_app.command("write")
+def openglance_page_write(
+    slug: Annotated[str, typer.Argument(help="Page slug (filename minus .md)")],
+    title: Annotated[str, typer.Option("--title", help="Page title")],
+    body_file: Annotated[Path, typer.Option("--body-file", help="Path to a markdown file containing the body (no frontmatter)")],
+    type: Annotated[str, typer.Option("--type", help="source|entity|concept|synthesis|comparison|question")] = "concept",
+    tag: Annotated[list[str] | None, typer.Option("--tag", help="Tag(s); repeat for multiple")] = None,
+    source: Annotated[list[str] | None, typer.Option("--source", help="Source path(s) for the page")] = None,
+    url: Annotated[str | None, typer.Option("--url")] = None,
+    overwrite: Annotated[bool, typer.Option("--overwrite", help="Replace existing")] = False,
+) -> None:
+    """Write an agent-authored wiki page (topic, concept, synthesis, comparison, question)."""
+    root = _resolve_root()
+    body = body_file.read_text()
+    try:
+        r = _og.write_page(
+            slug, title, body,
+            type=type, tags=tag or [], sources=source or [], url=url,
+            overwrite=overwrite, project_root=root,
+        )
+    except (ValueError, FileExistsError) as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    console.print(f"[green]wrote[/] {r['path']}")
+
+
+@openglance_page_app.command("list")
+def openglance_page_list(
+    type: Annotated[str | None, typer.Option("--type")] = None,
+    tag: Annotated[str | None, typer.Option("--tag", help="Substring match against tags")] = None,
+) -> None:
+    """List wiki pages with type / tag filters."""
+    root = _resolve_root()
+    pages = _og.list_pages(type=type, tag_substring=tag, project_root=root)
+    if not pages:
+        console.print("[dim]No matching pages.[/]")
+        return
+    for pg in pages:
+        tags_str = " ".join(pg["tags"][:4]) + ("…" if len(pg["tags"]) > 4 else "")
+        console.print(
+            f"  [bold]{pg['slug']}[/]  [dim]{pg['type'] or '?'}[/]  "
+            f"{pg['title'][:60]}  [dim]{tags_str}[/]"
+        )
+
+
+@openglance_page_app.command("read")
+def openglance_page_read(
+    slug: Annotated[str, typer.Argument()],
+) -> None:
+    """Print a wiki page's frontmatter + body."""
+    root = _resolve_root()
+    p = _og.read_page(slug, project_root=root)
+    if p is None:
+        console.print(f"[red]not found:[/] {slug}")
+        raise typer.Exit(1)
+    console.print(f"[dim]{p['path']}[/]")
+    console.print(p["body"])
+
+
+@openglance_page_app.command("delete")
+def openglance_page_delete(
+    slug: Annotated[str, typer.Argument()],
+) -> None:
+    """Delete a wiki page."""
+    root = _resolve_root()
+    if _og.delete_page(slug, project_root=root):
+        console.print(f"[green]deleted[/] {slug}")
+    else:
+        console.print(f"[red]not found:[/] {slug}")
+        raise typer.Exit(1)
 
 
 # ---------- formatting helpers ----------

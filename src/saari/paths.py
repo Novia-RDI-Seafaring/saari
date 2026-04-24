@@ -69,7 +69,10 @@ def papers_dir(root: Path | None = None) -> Path:
     return (root or project_root()) / "papers"
 
 
-def init_project(path: Path) -> Path:
+def init_project(
+    path: Path,
+    openglance_vault: str | None = None,
+) -> Path:
     """Create .saaristo/ and papers/ at `path`. Returns the project root."""
     root = path.expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -83,8 +86,16 @@ def init_project(path: Path) -> Path:
             "# .saaristo\n\n"
             "Tool-owned state for the `saari` CLI / MCP server.\n\n"
             "- `saari.db` — SQLite index (papers, searches, embeddings).\n"
-            "- `raw/<source>/<id>.json` — raw API responses, immutable ground truth.\n\n"
+            "- `raw/<source>/<id>.json` — raw API responses, immutable ground truth.\n"
+            "- `config.toml` — project config (openglance vault path, etc.).\n\n"
             "Safe to `.gitignore` if you don't want the corpus committed; "
             "safe to commit if you want collaborators to get it instantly.\n"
         )
+
+    if openglance_vault is not None:
+        # Lazy import to avoid circular dependency at module load.
+        from saari import config as _config
+
+        _config.set_value("openglance.vault", openglance_vault, project_root=root)
+
     return root
