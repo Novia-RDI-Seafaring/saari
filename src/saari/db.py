@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS paper_embedding_meta (
     dim INTEGER NOT NULL,
     embedded_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS paper_projection (
+    paper_id TEXT PRIMARY KEY REFERENCES paper(id) ON DELETE CASCADE,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    method TEXT NOT NULL,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 VEC_SCHEMA = f"""

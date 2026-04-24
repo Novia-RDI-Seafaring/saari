@@ -108,11 +108,11 @@ Skills marked **live** are implemented on both CLI (`saari <skill>`) and MCP (`s
 
 | Skill | Purpose | Returns |
 |---|---|---|
-| `project(study_id, method="umap", n_neighbors?, min_dist?, metric="cosine")` | 2D coords | `{projection_run_id, n_points}` |
-| `cluster(study_id, method, k? \| min_cluster_size?)` | Cluster assignments | `{cluster_run_id, n_clusters, n_noise}` |
-| `cluster_summary(study_id, cluster_run_id?, cluster_id?)` | Top keywords + exemplars per cluster | summary |
-| `gap_report(study_id, projection_run_id?, cluster_run_id?)` | Sparse regions, under-cited areas, suggested queries | narrative + structured |
-| `render(study_id, projection_run_id?, cluster_run_id?, format, out_path)` | Static html / png of the landscape | `path` |
+| `project(method="umap", n_neighbors?, min_dist?)` | **live** — 2D coords from embeddings (UMAP / PCA fallback); persists to `paper_projection` | `{n_points, method, x_range, y_range}` |
+| `canvas(format=obsidian\|html\|both, out?, status?)` | **live** — writes Obsidian `.canvas` and/or a standalone interactive HTML scatter (SVG + pan/zoom/filters) | `{path, n_nodes, size_kb}` |
+| `cluster(method, k? \| min_cluster_size?)` | roadmap — cluster assignments | `{cluster_run_id, n_clusters, n_noise}` |
+| `cluster_summary(cluster_run_id?, cluster_id?)` | roadmap — top keywords + exemplars per cluster | summary |
+| `gap_report(...)` | roadmap — sparse regions, under-cited areas, suggested queries | narrative + structured |
 
 ## Data model
 

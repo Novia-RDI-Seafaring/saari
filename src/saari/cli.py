@@ -9,9 +9,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from saari import db, paths
+from saari import canvas as _canvas_mod, db, paths
 from saari.embed import embed_papers as _embed_papers, query_corpus as _query_corpus
 from saari.models import Paper
+from saari.projection import project_corpus as _project_corpus
 from saari.snowball import snowball as _snowball
 from saari.sources import openalex as openalex_src
 
@@ -243,6 +244,64 @@ def query(
         if excerpt:
             console.print(f"  [dim italic]{excerpt}[/]")
         console.print()
+
+
+@app.command()
+def project(
+    method: Annotated[str, typer.Option("--method", help="umap | pca")] = "umap",
+    n_neighbors: Annotated[int, typer.Option("--n-neighbors")] = 15,
+    min_dist: Annotated[float, typer.Option("--min-dist")] = 0.1,
+) -> None:
+    """Project embedded papers to 2D (UMAP by default; PCA fallback). Stores in paper_projection."""
+    root = _resolve_root()
+    console.print(f"[dim]Projecting corpus with {method}...[/]")
+    r = _project_corpus(
+        method=method, n_neighbors=n_neighbors, min_dist=min_dist, project_root=root
+    )
+    if r.note:
+        console.print(f"[yellow]{r.note}[/]")
+        return
+    console.print(
+        f"[green]Projected[/] {r.n_points} points  method={r.method}  "
+        f"x=[{r.x_range[0]:.2f}, {r.x_range[1]:.2f}]  "
+        f"y=[{r.y_range[0]:.2f}, {r.y_range[1]:.2f}]"
+    )
+
+
+@app.command()
+def canvas(
+    fmt: Annotated[str, typer.Option("--format", "-f", help="obsidian | html | both")] = "both",
+    out: Annotated[Path | None, typer.Option("--out", help="Output path (default: papers/landscape.<ext>)")] = None,
+    status: Annotated[str | None, typer.Option("--status", help="Filter by status before rendering")] = None,
+) -> None:
+    """Render the corpus landscape as an Obsidian .canvas file and/or a standalone HTML viewer.
+
+    Requires `saari embed` and `saari project` first. The HTML viewer is
+    self-contained (no external deps) — just open it in a browser.
+    """
+    root = _resolve_root()
+    default_dir = paths.papers_dir(root)
+
+    if fmt in ("obsidian", "both"):
+        target = out if out and fmt == "obsidian" else default_dir / "landscape.canvas"
+        r = _canvas_mod.write_obsidian_canvas(target, status=status, project_root=root)
+        if r.get("note"):
+            console.print(f"[yellow]{r['note']}[/]")
+        else:
+            console.print(
+                f"[green]Wrote[/] {r['path']}  nodes={r['n_nodes']}  size={r['size_kb']} KB  "
+                "[dim](open in Obsidian)[/]"
+            )
+    if fmt in ("html", "both"):
+        target = out if out and fmt == "html" else default_dir / "landscape.html"
+        r = _canvas_mod.write_html_viewer(target, status=status, project_root=root)
+        if r.get("note"):
+            console.print(f"[yellow]{r['note']}[/]")
+        else:
+            console.print(
+                f"[green]Wrote[/] {r['path']}  nodes={r['n_nodes']}  size={r['size_kb']} KB  "
+                "[dim](open in a browser)[/]"
+            )
 
 
 @app.command()
