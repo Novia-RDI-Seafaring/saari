@@ -721,28 +721,13 @@ def openglance_export(
     )
 
 
-@openglance_app.command("build")
-def openglance_build() -> None:
-    """Run `openglance build <vault>/wiki` to refresh the rendered data files."""
+@openglance_app.command("where")
+def openglance_where() -> None:
+    """Print the vault + wiki paths so you can point `openglance build / serve` at them."""
     root = _resolve_root()
-    r = _og.build(project_root=root)
-    if r.get("ok"):
-        console.print(f"[green]built[/]  {r.get('cmd')}")
-        if r.get("stdout_tail"):
-            console.print(f"[dim]{r['stdout_tail'].strip()}[/]")
-    else:
-        console.print(f"[red]build failed[/]  rc={r.get('returncode')}")
-        console.print(f"[red]{r.get('stderr_tail', r.get('error', '')).strip()}[/]")
-        raise typer.Exit(1)
-
-
-@openglance_app.command("serve")
-def openglance_serve() -> None:
-    """Print the command to start the openglance dev server (run it yourself)."""
-    root = _resolve_root()
-    r = _og.serve_command(project_root=root)
-    console.print("[bold]To preview the vault, run:[/]")
-    console.print(f"  cd {r['cwd']} && {' '.join(r['argv'])}")
+    console.print(f"[bold]vault:[/] {_og.vault_path(root)}")
+    console.print(f"[bold]wiki:[/]  {_og.wiki_dir(root)}")
+    console.print("[dim]Build and serve are openglance's job — point its CLI at the wiki path.[/]")
 
 
 @openglance_page_app.command("write")

@@ -108,8 +108,7 @@ Skills marked **live** are implemented on both CLI (`saari <skill>`) and MCP (`s
 | `openglance_page_list(type?, tag_substring?)` | **live** — enumerate wiki pages with frontmatter summaries | `{n, pages}` |
 | `openglance_page_read(slug)` | **live** — frontmatter + body | page or `null` |
 | `openglance_page_delete(slug)` | **live** — remove a wiki page | `{slug, ok}` |
-| `openglance_build()` | **live** — runs the openglance build over the vault's `wiki/` to refresh data files | `{ok, returncode, stdout_tail, stderr_tail}` |
-| `openglance_serve_command()` | **live** — returns the argv to start the dev server (long-lived; agent prints, user runs) | `{argv, cwd, vault}` |
+| `openglance_where()` | **live** — vault + wiki paths so the user (or another tool) can point an openglance CLI at them. Building / serving the renderer is intentionally out of scope — saari only produces the data. | `{vault, wiki}` |
 | `resolve_abstracts(only_missing=true)` | roadmap — fill bad/missing abstracts via Crossref + portal hints | `{n_resolved, n_failed}` |
 | `suggest_screening(criteria)` | roadmap — LLM-assisted triage suggestions (non-committing) | suggestions |
 | `export(format, status_filter?, out_path)` | roadmap — bibtex / json / csv | path |

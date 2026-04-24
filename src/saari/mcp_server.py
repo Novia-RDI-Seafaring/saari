@@ -673,15 +673,15 @@ def openglance_page_delete(slug: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def openglance_build() -> dict[str, Any]:
-    """Run the openglance build to regenerate the renderer's data files."""
-    return _og.build(project_root=paths.project_root())
-
-
-@mcp.tool()
-def openglance_serve_command() -> dict[str, Any]:
-    """Return the argv to start the openglance dev server (for the user/agent to run)."""
-    return _og.serve_command(project_root=paths.project_root())
+def openglance_where() -> dict[str, Any]:
+    """Return the vault path and wiki path. Saari produces the data; openglance
+    (or any compatible renderer) handles build/serve — point its CLI at `wiki`.
+    """
+    root = paths.project_root()
+    return {
+        "vault": str(_og.vault_path(root)),
+        "wiki": str(_og.wiki_dir(root)),
+    }
 
 
 def main() -> None:

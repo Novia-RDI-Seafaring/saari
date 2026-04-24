@@ -1,8 +1,9 @@
 """Export the saari corpus as an openglance-compatible vault.
 
-Openglance (`/Users/toffe/dev/ai/graceful.ai/openglance`) renders tagged markdown
-into an interactive knowledge space (treemap + force-directed graph + cards +
-client-side semantic search via the same `all-MiniLM-L6-v2` model we use here).
+Saari's responsibility ends at writing the vault to disk in a layout openglance
+understands. Building the renderer's data files (`openglance build`) and
+serving the dev server are intentionally out of scope — those are openglance's
+job; the user (or another tool) runs them.
 
 The vault layout we produce:
 
@@ -22,11 +23,9 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import subprocess
 import unicodedata
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -486,43 +485,6 @@ def _strip_frontmatter(text: str) -> str:
     return text[end + 4 :].lstrip("\n")
 
 
-# ---------- build / serve wrappers ----------
-
-
-def _resolve_binary(project_root: Path | None = None) -> list[str]:
-    """Returns the argv prefix to invoke openglance. Falls back to `npx openglance`."""
-    binary = config.get("openglance.binary", project_root=project_root)
-    if binary:
-        return ["node", binary] if str(binary).endswith(".mjs") else [binary]
-    if shutil.which("npx") is not None:
-        return ["npx", "openglance"]
-    raise RuntimeError("Cannot locate openglance: set [openglance].binary in config.toml or install npx.")
-
-
-def build(project_root: Path | None = None) -> dict[str, Any]:
-    """Run `openglance build <vault>/wiki`. Returns stdout/stderr summary."""
-    root = project_root or paths.project_root()
-    wiki = _wiki_dir(root)
-    if not wiki.exists():
-        return {"ok": False, "error": f"No wiki dir at {wiki}. Run init_vault first."}
-    cmd = _resolve_binary(root) + ["build", str(wiki)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    return {
-        "ok": proc.returncode == 0,
-        "cmd": " ".join(cmd),
-        "returncode": proc.returncode,
-        "stdout_tail": proc.stdout[-1500:],
-        "stderr_tail": proc.stderr[-1500:],
-    }
-
-
-def serve_command(project_root: Path | None = None) -> dict[str, Any]:
-    """Return the argv that would start `openglance serve` for the vault.
-
-    Doesn't run it (a long-lived process is awkward for an MCP tool); the agent
-    or user runs it themselves and Ctrl-C when done.
-    """
-    root = project_root or paths.project_root()
-    wiki = _wiki_dir(root)
-    cmd = _resolve_binary(root) + ["serve", str(wiki)]
-    return {"argv": cmd, "cwd": str(root), "vault": str(vault_path(root))}
+def wiki_dir(project_root: Path | None = None) -> Path:
+    """The directory the user/openglance points at for `openglance build`/`serve`."""
+    return _wiki_dir(project_root)
