@@ -142,8 +142,11 @@ def _render_paper_page(
 
     body: list[str] = [f"# {paper.title}", ""]
 
+    # Per openglance's vault spec, the first paragraph under the H1 is the
+    # card teaser. Emit the abstract excerpt here rather than under a
+    # `## TLDR` heading.
     if paper.abstract and not paper.abstract_suspect:
-        body += ["## TLDR", "", _abstract_excerpt(paper.abstract), ""]
+        body += [_abstract_excerpt(paper.abstract), ""]
 
     body += ["## Metadata", ""]
     if paper.year is not None:
