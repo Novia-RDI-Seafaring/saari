@@ -9,6 +9,8 @@ dependencies = [
     "pydantic>=2.8",
     "typer>=0.12",
     "mcp>=1.2",
+    "fastembed>=0.8.0",
+    "sqlite-vec>=0.1.9",
 ]
 
 [project.scripts]

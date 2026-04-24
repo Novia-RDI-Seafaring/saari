@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from saari import db, paths
+from saari.embed import embed_papers as _embed_papers, query_corpus as _query_corpus
 from saari.models import Paper
 from saari.snowball import snowball as _snowball
 from saari.sources import openalex as openalex_src
@@ -131,6 +132,117 @@ def snowball(
     )
     if result.skipped_reason:
         console.print(f"[yellow]note:[/] {result.skipped_reason}")
+
+
+@app.command()
+def embed(
+    only_missing: Annotated[bool, typer.Option("--only-missing/--all", help="Skip already-embedded papers")] = True,
+) -> None:
+    """Embed papers in the project (local, no API cost; ~80MB model download first time).
+
+    Uses sentence-transformers/all-MiniLM-L6-v2 (384-dim). Vectors stored in
+    .saaristo/saari.db via sqlite-vec. Runs on CPU; batched; idempotent.
+    """
+    root = _resolve_root()
+    console.print("[dim]Embedding papers with all-MiniLM-L6-v2...[/]")
+    r = _embed_papers(only_missing=only_missing, project_root=root)
+    console.print(
+        f"[green]Embedded[/] {r.n_embedded} papers "
+        f"(skipped {r.n_skipped} with no usable text)  "
+        f"dim={r.dim}  model={r.model.split('/')[-1]}  elapsed={r.elapsed_sec:.2f}s"
+    )
+
+
+@app.command()
+def query(
+    text: Annotated[str, typer.Argument(help="Query text (natural language)")],
+    k: Annotated[int, typer.Option("--k", "-k", help="Top-k results")] = 20,
+    status: Annotated[str | None, typer.Option("--status", help="Filter by candidate|included|excluded|maybe")] = None,
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f")] = OutputFormat.md,
+) -> None:
+    """Semantic search: rank papers by cosine similarity to the query text.
+
+    Requires papers to be embedded (see `saari embed`). Scores are cosine
+    similarity in [-1, 1]; higher is more similar.
+    """
+    root = _resolve_root()
+    hits = _query_corpus(text, k=max(k * 3, k), project_root=root)  # over-fetch for status filtering
+    if not hits:
+        console.print("[yellow]No embedded papers yet. Run `saari embed` first.[/]")
+        return
+
+    score_by_id = {h.paper_id: h.score for h in hits}
+    with db.connect(paths.db_path(root)) as con:
+        placeholders = ",".join(["?"] * len(hits))
+        sql = (
+            "SELECT p.*, "
+            "(SELECT COUNT(DISTINCT search_id) FROM search_result sr WHERE sr.paper_id = p.id) AS seen_in "
+            f"FROM paper p WHERE p.id IN ({placeholders})"
+        )
+        args: list = [h.paper_id for h in hits]
+        if status is not None:
+            sql += " AND p.status = ?"
+            args.append(status)
+        rows = con.execute(sql, args).fetchall()
+        papers = sorted(
+            (db._row_to_paper(r) for r in rows),
+            key=lambda p: score_by_id.get(p.id, 0.0),
+            reverse=True,
+        )[:k]
+
+    if not papers:
+        console.print("[dim]No matches after filters.[/]")
+        return
+
+    if fmt is OutputFormat.json:
+        console.print_json(
+            data=[
+                {**_paper_card_dict(p), "score": round(score_by_id[p.id], 4)}
+                for p in papers
+            ]
+        )
+        return
+    if fmt is OutputFormat.md:
+        lines = [f"## Query — {len(papers)} hits for {text!r}", ""]
+        for p in papers:
+            meta_bits = []
+            if p.year is not None:
+                meta_bits.append(str(p.year))
+            if p.cited_by_count is not None:
+                meta_bits.append(f"cited={p.cited_by_count}")
+            if p.venue:
+                meta_bits.append(f"*{p.venue}*")
+            meta = ", ".join(meta_bits)
+            flags = _paper_flags(p)
+            flag_str = f"  ·  flags: {' '.join(flags)}" if flags else ""
+            lines.append(
+                f"- `{p.id}` — score=**{score_by_id[p.id]:+.3f}** — **{p.title}**  ({meta}){flag_str}"
+            )
+            excerpt = _abstract_excerpt(p.abstract, 200)
+            if excerpt:
+                lines.append(f"  > {excerpt}")
+            lines.append("")
+        print("\n".join(lines))
+        return
+
+    # cards / table
+    for p in papers:
+        score = score_by_id[p.id]
+        meta = [f"score={score:+.3f}"]
+        if p.year is not None:
+            meta.append(str(p.year))
+        if p.cited_by_count is not None:
+            meta.append(f"c={p.cited_by_count}")
+        flags = _paper_flags(p)
+        flag_str = f"  [{' '.join(flags)}]" if flags else ""
+        console.print(f"[bold]{p.id}[/]  [dim]{'  '.join(meta)}[/]{flag_str}")
+        console.print(f"  {p.title}")
+        if p.venue:
+            console.print(f"  [dim]{p.venue}[/]")
+        excerpt = _abstract_excerpt(p.abstract, 200)
+        if excerpt:
+            console.print(f"  [dim italic]{excerpt}[/]")
+        console.print()
 
 
 @app.command()

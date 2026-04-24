@@ -7,8 +7,12 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+import sqlite_vec
+
 from saari import paths
 from saari.models import Author, Location, Paper
+
+EMBED_DIM = 384  # sentence-transformers/all-MiniLM-L6-v2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS paper (
@@ -55,6 +59,20 @@ CREATE TABLE IF NOT EXISTS search_result (
 );
 
 CREATE INDEX IF NOT EXISTS idx_search_result_paper ON search_result(paper_id);
+
+CREATE TABLE IF NOT EXISTS paper_embedding_meta (
+    paper_id TEXT PRIMARY KEY REFERENCES paper(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    dim INTEGER NOT NULL,
+    embedded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+VEC_SCHEMA = f"""
+CREATE VIRTUAL TABLE IF NOT EXISTS paper_vec USING vec0(
+    paper_id TEXT PRIMARY KEY,
+    embedding float[{EMBED_DIM}]
+);
 """
 
 _PAPER_COLUMNS = [
@@ -104,14 +122,73 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
+    con.enable_load_extension(True)
+    sqlite_vec.load(con)
+    con.enable_load_extension(False)
     con.execute("PRAGMA foreign_keys = ON")
     try:
         con.executescript(SCHEMA)
+        con.executescript(VEC_SCHEMA)
         _migrate(con)
         yield con
         con.commit()
     finally:
         con.close()
+
+
+def upsert_embedding(
+    con: sqlite3.Connection,
+    paper_id: str,
+    embedding: bytes,
+    model: str,
+    dim: int,
+) -> None:
+    """Insert-or-replace a paper's embedding + metadata."""
+    con.execute("DELETE FROM paper_vec WHERE paper_id = ?", (paper_id,))
+    con.execute(
+        "INSERT INTO paper_vec (paper_id, embedding) VALUES (?, ?)",
+        (paper_id, embedding),
+    )
+    con.execute(
+        """
+        INSERT INTO paper_embedding_meta (paper_id, model, dim)
+        VALUES (?, ?, ?)
+        ON CONFLICT(paper_id) DO UPDATE SET
+            model = excluded.model,
+            dim = excluded.dim,
+            embedded_at = datetime('now')
+        """,
+        (paper_id, model, dim),
+    )
+
+
+def paper_ids_without_embedding(con: sqlite3.Connection) -> list[str]:
+    rows = con.execute(
+        "SELECT p.id FROM paper p "
+        "LEFT JOIN paper_embedding_meta m ON m.paper_id = p.id "
+        "WHERE m.paper_id IS NULL"
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def vector_search(
+    con: sqlite3.Connection,
+    query_vec: bytes,
+    k: int = 20,
+) -> list[tuple[str, float]]:
+    """Cosine top-k over paper_vec. Returns [(paper_id, distance), ...] closest first."""
+    rows = con.execute(
+        "SELECT paper_id, distance FROM paper_vec "
+        "WHERE embedding MATCH ? AND k = ? "
+        "ORDER BY distance",
+        (query_vec, k),
+    ).fetchall()
+    return [(r["paper_id"], r["distance"]) for r in rows]
+
+
+def count_embedded(con: sqlite3.Connection) -> int:
+    row = con.execute("SELECT COUNT(*) AS n FROM paper_embedding_meta").fetchone()
+    return int(row["n"]) if row else 0
 
 
 def upsert_paper(

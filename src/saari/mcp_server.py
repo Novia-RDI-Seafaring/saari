@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
 from saari import db, paths
+from saari.embed import embed_papers as _embed_papers, query_corpus as _query_corpus
 from saari.models import Paper
 from saari.snowball import snowball as _snowball
 from saari.sources import openalex as oa
@@ -329,6 +330,78 @@ def snowball(
         "backward_paper_ids": r.backward_paper_ids,
         "forward_paper_ids": r.forward_paper_ids,
         "skipped_reason": r.skipped_reason,
+    }
+
+
+@mcp.tool()
+def embed(only_missing: bool = True) -> dict[str, Any]:
+    """Embed papers in the project using sentence-transformers/all-MiniLM-L6-v2 (384-dim).
+
+    Local compute — no API cost. First invocation downloads ~80MB model.
+    Vectors persist in .saaristo/saari.db via sqlite-vec. Safe to call repeatedly
+    with only_missing=True (default).
+
+    Returns `{n_embedded, n_skipped, model, dim, elapsed_sec}`.
+    """
+    r = _embed_papers(only_missing=only_missing, project_root=paths.project_root())
+    return {
+        "n_embedded": r.n_embedded,
+        "n_skipped": r.n_skipped,
+        "model": r.model,
+        "dim": r.dim,
+        "elapsed_sec": round(r.elapsed_sec, 3),
+    }
+
+
+@mcp.tool()
+def query(
+    text: str,
+    k: int = 20,
+    status: str | None = None,
+    include_excerpt: bool = True,
+) -> dict[str, Any]:
+    """Semantic search: rank papers by cosine similarity to the query text.
+
+    Requires `embed` to have been run. Scores are cosine similarity in [-1, 1];
+    higher is more similar. Post-filtering by status is applied after vector
+    retrieval — over-fetches 3x to compensate.
+
+    Returns `{query, n, papers}` where each paper card includes a `score` field.
+    """
+    root = paths.project_root()
+    hits = _query_corpus(text, k=max(k * 3, k), project_root=root)
+    if not hits:
+        return {"query": text, "n": 0, "papers": [], "note": "No embedded papers. Run `embed` first."}
+
+    score_by_id = {h.paper_id: h.score for h in hits}
+    with db.connect(paths.db_path(root)) as con:
+        placeholders = ",".join(["?"] * len(hits))
+        sql = (
+            "SELECT p.*, "
+            "(SELECT COUNT(DISTINCT search_id) FROM search_result sr WHERE sr.paper_id = p.id) AS seen_in "
+            f"FROM paper p WHERE p.id IN ({placeholders})"
+        )
+        args: list[Any] = [h.paper_id for h in hits]
+        if status is not None:
+            sql += " AND p.status = ?"
+            args.append(status)
+        rows = con.execute(sql, args).fetchall()
+        papers = sorted(
+            (db._row_to_paper(r) for r in rows),
+            key=lambda p: score_by_id.get(p.id, 0.0),
+            reverse=True,
+        )[:k]
+
+    return {
+        "query": text,
+        "n": len(papers),
+        "papers": [
+            {
+                **_to_card(p, include_excerpt=include_excerpt).model_dump(),
+                "score": round(score_by_id[p.id], 4),
+            }
+            for p in papers
+        ],
     }
 
 

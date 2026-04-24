@@ -97,9 +97,9 @@ Skills marked **live** are implemented on both CLI (`saari <skill>`) and MCP (`s
 | `screen(paper_id, decision, note?)` | **live** — mark include / exclude / maybe; accepts aliases | `{status, ok}` |
 | `snowball(paper_id, direction, max_per_direction)` | **live** — backward (referenced_works) / forward (cites:) / both | `{n_fetched, n_new}` |
 | `searches_list(limit)` | **live** — search + snowball history | rows |
+| `embed(only_missing=true)` | **live** — local embeddings via fastembed + `sentence-transformers/all-MiniLM-L6-v2` (384-dim) stored in sqlite-vec; no API cost | `{n_embedded, n_skipped, model, dim, elapsed_sec}` |
+| `query(text, k=20, status?)` | **live** — semantic cosine search over the embedded corpus; returns cards with scores | `{query, n, papers}` with `score` per card |
 | `resolve_abstracts(only_missing=true)` | roadmap — fill bad/missing abstracts via Crossref + portal hints | `{n_resolved, n_failed}` |
-| `embed(only_missing=true)` | roadmap — embed papers with OpenAI; enables rerank + clustering | `{job_id}` |
-| `query(q, k=20, status_filter?)` | roadmap — semantic search within the project | ranked papers |
 | `suggest_screening(criteria)` | roadmap — LLM-assisted triage suggestions (non-committing) | suggestions |
 | `export(format, status_filter?, out_path)` | roadmap — bibtex / json / csv | path |
 | `job_status(job_id)` | roadmap — long-running op status | `{status, progress, result?}` |
