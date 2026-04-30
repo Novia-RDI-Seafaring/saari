@@ -9,7 +9,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from saari import canvas as _canvas_mod, config as _config, db, openglance as _og, paths
+from saari import canvas as _canvas_mod, db, paths
 from saari.embed import (
     embed_papers as _embed_papers,
     query_corpus as _query_corpus,
@@ -51,28 +51,50 @@ def _resolve_root() -> Path:
 @app.command()
 def init(
     path: Annotated[Path, typer.Argument(help="Project directory (default: cwd)")] = Path.cwd(),
-    openglance_vault: Annotated[
-        str | None,
-        typer.Option(
-            "--openglance-vault",
-            help="Path (relative to project or absolute) where openglance exports land. Default: papers/openglance",
-        ),
-    ] = None,
 ) -> None:
     """Initialize a saaristo project in PATH (creates .saaristo/ and papers/)."""
     existing = paths.find_project_root(path)
     if existing and existing == path.resolve():
         console.print(f"[yellow]Already a saaristo project:[/] {existing}")
-        if openglance_vault is not None:
-            _config.set_value("openglance.vault", openglance_vault, project_root=existing)
-            console.print(f"  set openglance vault → {openglance_vault}")
         return
-    root = paths.init_project(path, openglance_vault=openglance_vault)
+    root = paths.init_project(path)
     console.print(f"[green]Initialized saaristo project at[/] {root}")
     console.print(f"  {root / '.saaristo'}/      tool-owned state (db, raw/)")
     console.print(f"  {root / 'papers'}/        full-text PDFs and user-visible files")
-    if openglance_vault is not None:
-        console.print(f"  openglance vault: {openglance_vault}")
+
+
+@app.command()
+def serve(
+    port: Annotated[int, typer.Option("--port", "-p", help="HTTP port (default: 3044)")] = 3044,
+    host: Annotated[str, typer.Option("--host", help="Bind address")] = "127.0.0.1",
+    reload: Annotated[bool, typer.Option("--reload/--no-reload", help="Auto-reload on code changes")] = False,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open", help="Open browser on start")] = True,
+) -> None:
+    """Boot the saari HTTP server (REST API + SPA) on PORT.
+
+    Serves the built UI at the root if `ui/dist/` exists, otherwise just the
+    API. For UI development run `cd ui && npm run dev` in a second terminal —
+    Vite proxies `/api` to this server.
+    """
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    root = _resolve_root()
+    console.print(f"[bold]saari serve[/]  project: {root}")
+    console.print(f"  API:    http://{host}:{port}/api")
+    console.print(f"  docs:   http://{host}:{port}/docs")
+    console.print(f"  UI:     http://{host}:{port}/")
+    if open_browser and not reload:
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://{host}:{port}/")).start()
+    uvicorn.run(
+        "saari.server:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info",
+    )
 
 
 @app.command()
@@ -658,30 +680,6 @@ def export_bibtex_cmd(
     console.print(
         f"[green]Wrote[/] {r.n_entries} {status or 'all'} papers  "
         f"format={r.format}  path={r.path}"
-    )
-
-
-@export_app.command("openglance")
-def export_openglance_cmd(
-    out: Annotated[Path | None, typer.Option("--out", help="Output dir (default: [openglance].out config or papers/openglance/)")] = None,
-    status: Annotated[str | None, typer.Option("--status", help="Filter by status")] = None,
-    only_missing: Annotated[bool, typer.Option("--only-missing/--all")] = False,
-) -> None:
-    """Compile the corpus to openglance-format markdown (one .md per paper) in `out`.
-
-    Like tsx for TypeScript: pure conversion. No README, no config.json, no
-    vault scaffolding — saari just writes paper pages. Anything else in the
-    target directory (topic pages, openglance's own config) is yours to manage.
-    """
-    root = _resolve_root()
-    target = out
-    if target is None:
-        configured = _config.get("openglance.out", project_root=root)
-        target = (root / configured) if configured else (paths.papers_dir(root) / "openglance")
-    r = _og.export_corpus(out_dir=target, status=status, only_missing=only_missing, project_root=root)
-    console.print(
-        f"[green]Wrote[/] {r.n_pages_written} pages "
-        f"(skipped {r.n_pages_skipped})  out={r.out_dir}"
     )
 
 

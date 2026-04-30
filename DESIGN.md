@@ -102,7 +102,6 @@ Skills marked **live** are implemented on both CLI (`saari <skill>`) and MCP (`s
 | `papers_similar(paper_id, k=10, status?)` | **live** — rank corpus by cosine to a seed paper's embedding; seed excluded | `{seed, n, papers}` with `score` per card |
 | `export_bibtex(status="included", out?)` | **live** — BibTeX export with `<author><year><word>` keys; strips abstract pollution and caps length at 1500 chars | `{path, n_entries, format}` |
 | `refresh()` | **live** — one-shot: embed (only_missing) → project → canvas(both) | per-stage summary |
-| `export_openglance(out_dir?, status?, only_missing?)` | **live** — pure compiler (think `tsx` for TypeScript): writes one `<slug>.md` per paper in openglance format. Tags: flat (`paper`, `<status>`) + hierarchical from OpenAlex topics (`<domain>/<field>/<topic>`). Citation edges within corpus become `[[wiki-links]]`. No README, no config.json, no vault scaffolding — `out_dir` is the user's, saari just fills it. | `{out_dir, n_papers, n_pages_written}` |
 | `resolve_abstracts(only_missing=true)` | roadmap — fill bad/missing abstracts via Crossref + portal hints | `{n_resolved, n_failed}` |
 | `suggest_screening(criteria)` | roadmap — LLM-assisted triage suggestions (non-committing) | suggestions |
 | `export(format, status_filter?, out_path)` | roadmap — bibtex / json / csv | path |

@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from pathlib import Path
 
-from saari import canvas as _canvas_mod, db, openglance as _og, paths
+from saari import canvas as _canvas_mod, db, paths, study as _study
 from saari.embed import (
     embed_papers as _embed_papers,
     query_corpus as _query_corpus,
@@ -584,42 +584,45 @@ def refresh() -> dict[str, Any]:
 
 
 @mcp.tool()
-def export_openglance(
-    out_dir: str | None = None,
-    status: str | None = None,
-    only_missing: bool = False,
-) -> dict[str, Any]:
-    """Compile the corpus into openglance-format markdown files in `out_dir`.
+def study_get() -> dict[str, Any]:
+    """Read the study metadata: research question, inclusion/exclusion criteria, tags.
 
-    Like tsx for TypeScript: pure conversion. One `<slug>.md` per paper. No
-    README, no config.json, no vault scaffolding — saari just writes paper
-    pages. Anything else in the directory (topic pages, openglance's own
-    config) is yours to manage.
-
-    `out_dir` resolution: explicit arg > `[openglance].out` config > default
-    `papers/openglance/` inside the project.
-
-    Tags: flat `paper` + screening status, plus hierarchical
-    `<domain>/<field>/<topic>` from OpenAlex topics (read on-the-fly from raw
-    JSON). Citation edges restricted to corpus members become `[[wiki-links]]`.
+    Stored at `.saaristo/study.json` and editable via `study_set`. Returns the full
+    shape with empty defaults so callers can render without null-checks.
     """
-    from saari import config as _cfg
+    return _study.get(project_root=paths.project_root())
 
-    root = paths.project_root()
-    if out_dir is None:
-        configured = _cfg.get("openglance.out", project_root=root)
-        target = (root / configured) if configured else (paths.papers_dir(root) / "openglance")
-    else:
-        target = Path(out_dir)
-    r = _og.export_corpus(
-        out_dir=target, status=status, only_missing=only_missing, project_root=root
+
+@mcp.tool()
+def study_set(
+    question: str | None = None,
+    criteria: str | None = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    """Set / patch study metadata. Only fields you pass change.
+
+    - `question`: the research question (markdown OK).
+    - `criteria`: inclusion/exclusion criteria (markdown OK).
+    - `tags`: free-form tags. Pass `[]` to clear, `None` to leave alone.
+
+    Returns the full updated study record.
+    """
+    return _study.update(
+        question=question,
+        criteria=criteria,
+        tags=tags,
+        project_root=paths.project_root(),
     )
-    return {
-        "out_dir": r.out_dir,
-        "n_papers": r.n_papers,
-        "n_pages_written": r.n_pages_written,
-        "n_pages_skipped": r.n_pages_skipped,
-    }
+
+
+@mcp.tool()
+def funnel() -> dict[str, Any]:
+    """Return PRISMA-style aggregate: searches, fetched, unique, screened.
+
+    Use to summarize review progress in narrative or to render a flow diagram.
+    Includes per-search rows and per-status counts.
+    """
+    return _study.funnel(project_root=paths.project_root())
 
 
 def main() -> None:

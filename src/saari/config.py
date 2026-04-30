@@ -1,12 +1,6 @@
 """Project-scoped config at `.saaristo/config.toml`.
 
 Tiny schema; written manually to avoid a tomli-w dep. Reads via stdlib `tomllib`.
-
-Example:
-
-    [openglance]
-    vault = "papers/openglance"     # relative to project root, or absolute
-    binary = "/path/to/openglance"  # optional; otherwise falls back to `npx openglance`
 """
 
 from __future__ import annotations
@@ -31,7 +25,7 @@ def read(project_root: Path | None = None) -> dict[str, Any]:
 
 
 def get(path: str, default: Any = None, project_root: Path | None = None) -> Any:
-    """Dot-path lookup: `get('openglance.vault')`."""
+    """Dot-path lookup: `get('section.key')`."""
     cfg = read(project_root)
     cur: Any = cfg
     for part in path.split("."):
