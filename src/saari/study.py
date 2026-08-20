@@ -33,6 +33,8 @@ def get(project_root: Path | None = None) -> dict[str, Any]:
     """
     p = study_path(project_root)
     base: dict[str, Any] = {
+        "title": "",
+        "authors": "",
         "question": "",
         "criteria": "",
         "tags": [],
@@ -51,6 +53,8 @@ def get(project_root: Path | None = None) -> dict[str, Any]:
 
 def update(
     *,
+    title: str | None = None,
+    authors: str | None = None,
     question: str | None = None,
     criteria: str | None = None,
     tags: list[str] | None = None,
@@ -63,6 +67,10 @@ def update(
     """
     p = study_path(project_root)
     cur = get(project_root)
+    if title is not None:
+        cur["title"] = title
+    if authors is not None:
+        cur["authors"] = authors
     if question is not None:
         cur["question"] = question
     if criteria is not None:
