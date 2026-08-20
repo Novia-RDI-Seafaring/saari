@@ -1,7 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { api, type ProjectInfo } from "@/lib/api";
-import { Home, Search, ScatterChart, Network, Database, FileDown, FileText, Loader2 } from "lucide-react";
+import { Home, Search, ScatterChart, Database, FileDown, FileText, Loader2 } from "lucide-react";
 import { ChatPanel } from "./ChatPanel";
 import { StageDots } from "./Stepper";
 import { Button } from "./ui/button";
@@ -84,7 +84,6 @@ export function Layout() {
             { to: "/home", icon: Home, label: "Home" },
             { to: "/searches", icon: Search, label: "Searches" },
             { to: "/corpus", icon: ScatterChart, label: "Corpus" },
-            { to: "/graph", icon: Network, label: "Graph" },
             { to: "/papers", icon: Database, label: "Papers" },
             { to: "/review", icon: FileText, label: "Review" },
           ].map(({ to, icon: Icon, label }) => (

@@ -221,10 +221,10 @@ export function Home() {
               dim={!funnel || funnel.embedded === 0}
             />
             <ActionCard
-              to="/graph"
+              to="/corpus"
               icon={Network}
               title="Map the citations"
-              hint="See which papers cite which. Snowball seeds to densify."
+              hint="Citation edges on the landscape. Click a paper for direction arrows; snowball from its detail panel."
               dim={!funnel || funnel.n_unique < 5}
             />
             <ActionCard
