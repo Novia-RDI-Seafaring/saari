@@ -1,0 +1,134 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - heading "saari" [level=1] [ref=e7]
+      - generic [ref=e8]: /
+      - generic [ref=e9]: paper
+      - generic [ref=e10]: 255 papers · 10 searches
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]: embedded 255/255
+        - generic [ref=e14]: ·
+        - generic [ref=e15]: projected 255/255
+        - generic [ref=e16]: candidate 133
+        - generic [ref=e17]: excluded 57
+        - generic [ref=e18]: included 43
+        - generic [ref=e19]: maybe 22
+      - button "bibtex" [ref=e20]:
+        - img [ref=e21]
+        - text: bibtex
+  - generic [ref=e25]:
+    - navigation [ref=e26]:
+      - link "Home" [ref=e27] [cursor=pointer]:
+        - /url: /home
+        - img [ref=e28]
+        - text: Home
+      - link "Searches" [ref=e31] [cursor=pointer]:
+        - /url: /searches
+        - img [ref=e32]
+        - text: Searches
+      - link "Corpus" [ref=e35] [cursor=pointer]:
+        - /url: /corpus
+        - img [ref=e36]
+        - text: Corpus
+      - link "Graph" [ref=e43] [cursor=pointer]:
+        - /url: /graph
+        - img [ref=e44]
+        - text: Graph
+      - link "Papers" [ref=e49] [cursor=pointer]:
+        - /url: /papers
+        - img [ref=e50]
+        - text: Papers
+      - link "Review" [ref=e54] [cursor=pointer]:
+        - /url: /review
+        - img [ref=e55]
+        - text: Review
+    - main [ref=e58]:
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - generic [ref=e61]:
+            - heading "New OpenAlex search" [level=2] [ref=e62]
+            - generic [ref=e63]:
+              - textbox "query…" [ref=e64]
+              - generic [ref=e65]:
+                - textbox "from" [ref=e66]
+                - textbox "to" [ref=e67]
+                - textbox "limit" [ref=e68]: "25"
+              - button "run" [disabled]:
+                - img
+                - text: run
+          - generic [ref=e69]:
+            - 'button "LLM agents for systematic literature review screening #10 openalex 25 results 2026-08-13 08:37" [ref=e70]':
+              - generic [ref=e71]: LLM agents for systematic literature review screening
+              - generic [ref=e72]:
+                - generic [ref=e73]: "#10"
+                - generic [ref=e74]: openalex
+                - generic [ref=e75]: 25 results
+                - generic [ref=e76]: 2026-08-13 08:37
+            - 'button "embeddings vector database #9 openalex 25 results 2026-08-13 08:36" [ref=e77]':
+              - generic [ref=e78]: embeddings vector database
+              - generic [ref=e79]:
+                - generic [ref=e80]: "#9"
+                - generic [ref=e81]: openalex
+                - generic [ref=e82]: 25 results
+                - generic [ref=e83]: 2026-08-13 08:36
+            - 'button "both:openalex:W2165744313 #8 snowball 50 results 2026-08-13 08:34" [ref=e84]':
+              - generic [ref=e85]: both:openalex:W2165744313
+              - generic [ref=e86]:
+                - generic [ref=e87]: "#8"
+                - generic [ref=e88]: snowball
+                - generic [ref=e89]: 50 results
+                - generic [ref=e90]: 2026-08-13 08:34
+            - 'button "backward:openalex:W3032875465 #7 snowball 30 results 2026-05-22 08:26" [ref=e91]':
+              - generic [ref=e92]: backward:openalex:W3032875465
+              - generic [ref=e93]:
+                - generic [ref=e94]: "#7"
+                - generic [ref=e95]: snowball
+                - generic [ref=e96]: 30 results
+                - generic [ref=e97]: 2026-05-22 08:26
+            - 'button "agent UX user experience autonomous systems #6 openalex 25 results 2026-05-22 08:24" [ref=e98]':
+              - generic [ref=e99]: agent UX user experience autonomous systems
+              - generic [ref=e100]:
+                - generic [ref=e101]: "#6"
+                - generic [ref=e102]: openalex
+                - generic [ref=e103]: 25 results
+                - generic [ref=e104]: 2026-05-22 08:24
+            - 'button "designing tools for LLM agents #5 openalex 25 results 2026-05-22 08:24" [ref=e105]':
+              - generic [ref=e106]: designing tools for LLM agents
+              - generic [ref=e107]:
+                - generic [ref=e108]: "#5"
+                - generic [ref=e109]: openalex
+                - generic [ref=e110]: 25 results
+                - generic [ref=e111]: 2026-05-22 08:24
+            - 'button "agent experience human-agent interaction #4 openalex 30 results 2026-05-22 08:24" [ref=e112]':
+              - generic [ref=e113]: agent experience human-agent interaction
+              - generic [ref=e114]:
+                - generic [ref=e115]: "#4"
+                - generic [ref=e116]: openalex
+                - generic [ref=e117]: 30 results
+                - generic [ref=e118]: 2026-05-22 08:24
+            - 'button "forward:openalex:W4401667275 #3 snowball 15 results 2026-04-24 07:59" [ref=e119]':
+              - generic [ref=e120]: forward:openalex:W4401667275
+              - generic [ref=e121]:
+                - generic [ref=e122]: "#3"
+                - generic [ref=e123]: snowball
+                - generic [ref=e124]: 15 results
+                - generic [ref=e125]: 2026-04-24 07:59
+            - 'button "backward:openalex:W4401667275 #2 snowball 29 results 2026-04-24 07:59" [ref=e126]':
+              - generic [ref=e127]: backward:openalex:W4401667275
+              - generic [ref=e128]:
+                - generic [ref=e129]: "#2"
+                - generic [ref=e130]: snowball
+                - generic [ref=e131]: 29 results
+                - generic [ref=e132]: 2026-04-24 07:59
+            - 'button "agent callable literature review primitives #1 openalex 3 results 2026-04-24 07:22" [ref=e133]':
+              - generic [ref=e134]: agent callable literature review primitives
+              - generic [ref=e135]:
+                - generic [ref=e136]: "#1"
+                - generic [ref=e137]: openalex
+                - generic [ref=e138]: 3 results
+                - generic [ref=e139]: 2026-04-24 07:22
+        - generic [ref=e142]: Pick a search on the left, or run a new one.
+    - button "agent" [ref=e144]:
+      - img [ref=e145]
+      - text: agent

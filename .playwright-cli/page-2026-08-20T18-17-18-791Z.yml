@@ -1,0 +1,45 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "saari" [level=1] [ref=e7]
+    - button "bibtex" [ref=e9]:
+      - img [ref=e10]
+      - text: bibtex
+  - generic [ref=e14]:
+    - navigation [ref=e15]:
+      - link "Home" [ref=e16] [cursor=pointer]:
+        - /url: /home
+        - img [ref=e17]
+        - text: Home
+      - link "Searches" [ref=e20] [cursor=pointer]:
+        - /url: /searches
+        - img [ref=e21]
+        - text: Searches
+      - link "Corpus" [ref=e24] [cursor=pointer]:
+        - /url: /corpus
+        - img [ref=e25]
+        - text: Corpus
+      - link "Graph" [ref=e32] [cursor=pointer]:
+        - /url: /graph
+        - img [ref=e33]
+        - text: Graph
+      - link "Papers" [ref=e38] [cursor=pointer]:
+        - /url: /papers
+        - img [ref=e39]
+        - text: Papers
+      - link "Review" [ref=e43] [cursor=pointer]:
+        - /url: /review
+        - img [ref=e44]
+        - text: Review
+    - main [ref=e47]:
+      - generic [ref=e48]:
+        - generic [ref=e49]:
+          - button "Generate review bundle" [ref=e50]:
+            - img [ref=e51]
+            - text: Generate review bundle
+          - generic [ref=e53]:
+            - button "paper" [ref=e54]
+            - button "figures" [ref=e55]
+        - generic [ref=e56]: No review bundle yet. Set a protocol + screen papers, then Generate.
+    - button "agent" [ref=e57]:
+      - img [ref=e58]
+      - text: agent

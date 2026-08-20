@@ -1,0 +1,88 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - heading "saari" [level=1] [ref=e7]
+      - generic [ref=e8]: /
+      - generic [ref=e9]: paper
+      - generic [ref=e10]: 255 papers · 10 searches
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]: embedded 255/255
+        - generic [ref=e14]: ·
+        - generic [ref=e15]: projected 255/255
+        - generic [ref=e16]: candidate 133
+        - generic [ref=e17]: excluded 57
+        - generic [ref=e18]: included 43
+        - generic [ref=e19]: maybe 22
+      - button "bibtex" [ref=e20]:
+        - img [ref=e21]
+        - text: bibtex
+  - generic [ref=e25]:
+    - navigation [ref=e26]:
+      - link "Home" [ref=e27] [cursor=pointer]:
+        - /url: /home
+        - img [ref=e28]
+        - text: Home
+      - link "Searches" [ref=e31] [cursor=pointer]:
+        - /url: /searches
+        - img [ref=e32]
+        - text: Searches
+      - link "Corpus" [ref=e35] [cursor=pointer]:
+        - /url: /corpus
+        - img [ref=e36]
+        - text: Corpus
+      - link "Graph" [ref=e43] [cursor=pointer]:
+        - /url: /graph
+        - img [ref=e44]
+        - text: Graph
+      - link "Papers" [ref=e49] [cursor=pointer]:
+        - /url: /papers
+        - img [ref=e50]
+        - text: Papers
+      - link "Review" [ref=e54] [cursor=pointer]:
+        - /url: /review
+        - img [ref=e55]
+        - text: Review
+    - main [ref=e58]:
+      - generic [ref=e59]:
+        - generic [ref=e60]:
+          - button "Regenerate bundle" [ref=e61]:
+            - img [ref=e62]
+            - text: Regenerate bundle
+          - generic [ref=e64]:
+            - button "slides" [ref=e65]
+            - button "paper" [ref=e66]
+            - button "figures" [active] [ref=e67]
+        - generic [ref=e972]:
+          - generic [ref=e973]:
+            - generic [ref=e974]:
+              - generic [ref=e975]: prisma.svg
+              - link "download" [ref=e976] [cursor=pointer]:
+                - /url: /api/review/file/prisma.svg?download=1
+                - button "download" [ref=e977]:
+                  - img [ref=e978]
+                  - text: download
+            - img "prisma.svg" [ref=e982]
+          - generic [ref=e983]:
+            - generic [ref=e984]:
+              - generic [ref=e985]: landscape.svg
+              - link "download" [ref=e986] [cursor=pointer]:
+                - /url: /api/review/file/landscape.svg?download=1
+                - button "download" [ref=e987]:
+                  - img [ref=e988]
+                  - text: download
+            - img "landscape.svg" [ref=e992]
+          - generic [ref=e993]:
+            - link "refs.bib" [ref=e994] [cursor=pointer]:
+              - /url: /api/review/file/refs.bib?download=1
+              - button "refs.bib" [ref=e995]:
+                - img [ref=e996]
+                - text: refs.bib
+            - link "prisma.mmd" [ref=e1000] [cursor=pointer]:
+              - /url: /api/review/file/prisma.mmd?download=1
+              - button "prisma.mmd" [ref=e1001]:
+                - img [ref=e1002]
+                - text: prisma.mmd
+    - button "agent" [ref=e82]:
+      - img [ref=e83]
+      - text: agent

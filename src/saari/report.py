@@ -73,7 +73,13 @@ def build_prisma(funnel: dict[str, Any], excluded: list[Paper]) -> dict[str, Any
 
     n_fetched = int(funnel.get("n_fetched", 0))
     n_unique = int(funnel.get("n_unique", 0))
-    n_duplicates_removed = max(n_fetched - n_unique, 0)
+    # Papers can enter the corpus outside any recorded search event (added
+    # directly by id, seeded, etc.). Attribute those to an "other" bucket so
+    # the funnel stays arithmetically consistent: identified >= unique, and
+    # duplicates removed is exact instead of clamped.
+    n_other = max(n_unique - n_fetched, 0)
+    n_total = n_fetched + n_other
+    n_duplicates_removed = n_total - n_unique
 
     by_status = funnel.get("by_status", {})
     n_included = int(by_status.get("included", 0))
@@ -92,7 +98,8 @@ def build_prisma(funnel: dict[str, Any], excluded: list[Paper]) -> dict[str, Any
             "by_source": by_source,
             "n_database": n_database,
             "n_snowball": n_snowball,
-            "n_total": n_fetched,
+            "n_other": n_other,
+            "n_total": n_total,
         },
         "n_duplicates_removed": n_duplicates_removed,
         "n_unique": n_unique,
@@ -124,12 +131,14 @@ def _reasons_lines(reasons: dict[str, int]) -> str:
 def render_prisma_mermaid(data: dict[str, Any]) -> str:
     """PRISMA flow as a Mermaid `flowchart` (renders on GitHub / via Pandoc)."""
     idn = data["identification"]
-    ident = (
-        f"Records identified (n={idn['n_total']})<br/>"
-        f"database searches: {idn['n_database']} · snowballing: {idn['n_snowball']}"
-    )
+    src_line = f"database searches: {idn['n_database']} · snowballing: {idn['n_snowball']}"
+    if idn.get("n_other"):
+        src_line += f" · other: {idn['n_other']}"
+    ident = f"Records identified (n={idn['n_total']})<br/>{src_line}"
     dedup = f"Records after duplicates removed (n={data['n_unique']})<br/>duplicates removed: {data['n_duplicates_removed']}"
-    screened = f"Records screened (n={data['n_screened'] + data['n_unscreened']})"
+    screened = f"Records screened (n={data['n_screened']})"
+    if data["n_unscreened"]:
+        screened += f"<br/>awaiting screening: {data['n_unscreened']}"
     excluded = f"Records excluded (n={data['excluded']['n']})<br/>{_reasons_lines(data['excluded']['reasons'])}"
     included = f"Studies included in review (n={data['n_included']})"
     return (
@@ -169,20 +178,24 @@ def render_prisma_svg(data: dict[str, Any]) -> str:
     idn = data["identification"]
     reasons = data["excluded"]["reasons"]
     reason_lines = [f"{note} (n={n})" for note, n in list(reasons.items())[:4]] or ["no reasons recorded"]
+    # The side box is 250px wide with centered, non-wrapping text.
+    reason_lines = [ln if len(ln) <= 36 else ln[:33] + "..." for ln in reason_lines]
 
-    W, H = 720, 620
+    W, H = 840, 620
     bx, bw = 210, 300  # main column x, width
     boxes = [
         _svg_box(bx, 20, bw, 70, [
             f"Records identified (n={idn['n_total']})",
-            f"database: {idn['n_database']}  ·  snowballing: {idn['n_snowball']}",
+            f"database: {idn['n_database']}  ·  snowballing: {idn['n_snowball']}"
+            + (f"  ·  other: {idn['n_other']}" if idn.get("n_other") else ""),
         ]),
         _svg_box(bx, 160, bw, 70, [
             f"Records after de-duplication (n={data['n_unique']})",
             f"duplicates removed: {data['n_duplicates_removed']}",
         ]),
         _svg_box(bx, 300, bw, 50, [
-            f"Records screened (n={data['n_screened'] + data['n_unscreened']})",
+            f"Records screened (n={data['n_screened']})",
+            *( [f"awaiting screening: {data['n_unscreened']}"] if data["n_unscreened"] else [] ),
         ]),
         _svg_box(bx, 470, bw, 50, [
             f"Studies included (n={data['n_included']})",
@@ -464,9 +477,15 @@ def build_paper_md(
     out.append(f"{criteria}\n" if criteria else _slot("Inclusion/exclusion criteria (set with `saari study set --criteria`)"))
     idn = prisma["identification"]
     out.append("\n### 2.2 Information sources and search strategy\n")
+    other_clause = (
+        f", plus {idn['n_other']} record(s) added outside recorded searches"
+        if idn.get("n_other")
+        else ""
+    )
     out.append(
-        f"Records were identified via {idn['n_database']} database search(es) on the OpenAlex API "
-        f"and {idn['n_snowball']} record(s) via citation snowballing. "
+        f"Records were identified via database searches on the OpenAlex API "
+        f"({idn['n_database']} records across {len([s for s in searches if (s.get('source') or '') != 'snowball'])} searches) "
+        f"and citation snowballing ({idn['n_snowball']} records){other_clause}. "
         f"The full search log ({len(searches)} event(s)):\n\n"
     )
     out.append(search_strategy_table(searches))
@@ -529,7 +548,7 @@ def build_slides_md(
         f"## Research question\n\n> {question}",
         (
             "## Method\n\n"
-            f"- Source: OpenAlex ({idn['n_database']} searches) + snowballing ({idn['n_snowball']})\n"
+            f"- Source: OpenAlex ({idn['n_database']} records) + snowballing ({idn['n_snowball']} records)\n"
             f"- {prisma['n_unique']} unique records after de-duplication\n"
             f"- {prisma['n_screened']} screened -> **{prisma['n_included']} included**\n\n"
             f"![w:520]({prisma_fig})"

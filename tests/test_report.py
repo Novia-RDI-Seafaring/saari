@@ -136,3 +136,28 @@ def test_landscape_svg_handles_empty_and_points():
     assert "No projection" in report.render_landscape_svg([])
     svg = report.render_landscape_svg([{"x": 0, "y": 0, "status": "included", "title": "T", "cited": 10}])
     assert svg.startswith("<svg") and "circle" in svg
+
+
+def test_build_prisma_papers_outside_searches():
+    """Corpus larger than search returns must not make dedup go negative.
+
+    Papers added outside recorded searches (direct by id, seeds) go to an
+    "other" bucket so identified >= unique and duplicates removed is exact.
+    """
+    funnel = {
+        "searches": [
+            {"source": "openalex", "query": "q", "n_returned": 207, "created_at": "2026-07-01"},
+        ],
+        "n_fetched": 207,
+        "n_unique": 208,
+        "by_status": {"included": 43, "excluded": 57, "maybe": 22, "candidate": 86},
+    }
+    d = report.build_prisma(funnel, [])
+    assert d["identification"]["n_other"] == 1
+    assert d["identification"]["n_total"] == 208
+    assert d["n_duplicates_removed"] == 0
+    assert d["identification"]["n_total"] >= d["n_unique"]
+    mmd = report.render_prisma_mermaid(d)
+    assert "other: 1" in mmd
+    svg = report.render_prisma_svg(d)
+    assert "other: 1" in svg
