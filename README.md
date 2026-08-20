@@ -101,4 +101,4 @@ pnpm dev` proxies `/api` to a running `saari serve`.
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+MIT. See `LICENSE`.
