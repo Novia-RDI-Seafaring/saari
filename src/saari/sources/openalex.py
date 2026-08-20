@@ -17,6 +17,14 @@ BASE_URL = "https://api.openalex.org"
 # (all users of a hosted instance share one egress IP).
 DEFAULT_MAILTO = os.environ.get("OPENALEX_MAILTO", "info.graceful.ai@gmail.com")
 
+def _resolve_mailto() -> str:
+    """Polite-pool attribution: the request's bound identity email (hosted
+    mode, opt-in via SAARI_MAILTO_FROM_IDENTITY) or the operator default."""
+    from saari.hosting import request_mailto
+
+    return request_mailto() or DEFAULT_MAILTO
+
+
 _ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([^/?#v]+)", re.IGNORECASE)
 _PMID_URL_RE = re.compile(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", re.IGNORECASE)
 _PMCID_URL_RE = re.compile(r"ncbi\.nlm\.nih\.gov/pmc/articles/(PMC\d+)", re.IGNORECASE)
@@ -176,7 +184,7 @@ def search(
     limit: int = 25,
     year_from: int | None = None,
     year_to: int | None = None,
-    mailto: str = DEFAULT_MAILTO,
+    mailto: str | None = None,
     project_root: Path | None = None,
 ) -> list[tuple[Paper, str]]:
     """Search OpenAlex /works. Returns [(paper, raw_path), ...] up to `limit`, ranked by relevance.
@@ -186,7 +194,7 @@ def search(
     params: dict[str, Any] = {
         "search": query,
         "per-page": min(limit, 200),
-        "mailto": mailto,
+        "mailto": mailto or _resolve_mailto(),
     }
     filters: list[str] = []
     if year_from is not None:
@@ -207,13 +215,13 @@ def search(
 
 def fetch_by_id(
     work_id: str,
-    mailto: str = DEFAULT_MAILTO,
+    mailto: str | None = None,
     project_root: Path | None = None,
 ) -> tuple[Paper, str] | None:
     """Fetch a single OpenAlex work by ID. Returns (paper, raw_path) or None."""
     bare = work_id.removeprefix("openalex:")
     with httpx.Client(timeout=30.0) as client:
-        resp = client.get(f"{BASE_URL}/works/{bare}", params={"mailto": mailto})
+        resp = client.get(f"{BASE_URL}/works/{bare}", params={"mailto": mailto or _resolve_mailto()})
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -223,7 +231,7 @@ def fetch_by_id(
 
 def fetch_works_by_ids(
     ids: list[str],
-    mailto: str = DEFAULT_MAILTO,
+    mailto: str | None = None,
     project_root: Path | None = None,
     chunk_size: int = 50,
 ) -> list[tuple[Paper, str]]:
@@ -238,7 +246,7 @@ def fetch_works_by_ids(
             params = {
                 "filter": f"openalex_id:{'|'.join(chunk)}",
                 "per-page": chunk_size,
-                "mailto": mailto,
+                "mailto": mailto or _resolve_mailto(),
             }
             resp = client.get(f"{BASE_URL}/works", params=params)
             resp.raise_for_status()
@@ -251,7 +259,7 @@ def fetch_works_by_ids(
 def fetch_citing_works(
     work_id: str,
     limit: int = 25,
-    mailto: str = DEFAULT_MAILTO,
+    mailto: str | None = None,
     project_root: Path | None = None,
 ) -> list[tuple[Paper, str]]:
     """Fetch works that cite `work_id` (forward snowball via OpenAlex `cites:` filter)."""
@@ -259,7 +267,7 @@ def fetch_citing_works(
     params: dict[str, Any] = {
         "filter": f"cites:{bare}",
         "per-page": min(limit, 200),
-        "mailto": mailto,
+        "mailto": mailto or _resolve_mailto(),
     }
     with httpx.Client(timeout=30.0) as client:
         resp = client.get(f"{BASE_URL}/works", params=params)

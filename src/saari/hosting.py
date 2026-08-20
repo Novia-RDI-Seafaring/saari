@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import re
+from contextvars import ContextVar
 from pathlib import Path
 
 from saari import paths
@@ -31,6 +32,24 @@ from saari import paths
 USER_HEADERS = ("x-ms-client-principal-id", "x-saari-user")
 PROJECT_HEADER = "x-saari-project"
 DEFAULT_PROJECT = "default"
+
+# Easy Auth also injects the signed-in principal's UPN (usually their email).
+# When SAARI_MAILTO_FROM_IDENTITY is truthy, that address is used as the
+# OpenAlex `mailto` for requests made on the user's behalf, so their API
+# traffic is attributed to them rather than one shared service address.
+# Opt-in per deployment: it forwards org users' email addresses to OpenAlex.
+MAILTO_HEADERS = ("x-ms-client-principal-name", "x-saari-email")
+_request_mailto: ContextVar[str | None] = ContextVar("saari_request_mailto", default=None)
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def mailto_from_identity_enabled() -> bool:
+    return os.environ.get("SAARI_MAILTO_FROM_IDENTITY", "").lower() in {"1", "true", "yes"}
+
+
+def request_mailto() -> str | None:
+    """The caller's email for polite-pool attribution, if bound and enabled."""
+    return _request_mailto.get()
 
 # Path components derived from headers must never traverse. Entra object ids
 # are GUIDs; project names are user-chosen, so both are validated.
@@ -118,11 +137,19 @@ class RequestRootMiddleware:
             await _plain_response(send, 401, b"missing identity header")
             return
 
+        mail_token = None
+        if mailto_from_identity_enabled():
+            email = next((headers[h] for h in MAILTO_HEADERS if headers.get(h)), None)
+            if email and _EMAIL_RE.match(email):
+                mail_token = _request_mailto.set(email)
+
         token = paths.set_request_root(root)
         try:
             await self.app(scope, receive, send)
         finally:
             paths.reset_request_root(token)
+            if mail_token is not None:
+                _request_mailto.reset(mail_token)
 
 
 async def _plain_response(send, status: int, body: bytes) -> None:  # type: ignore[no-untyped-def]
