@@ -693,7 +693,11 @@ def create_app() -> FastAPI:
 
     # ---------- static SPA ----------
 
-    ui_dist = Path(__file__).resolve().parent.parent.parent / "ui" / "dist"
+    # Packaged wheel ships the built SPA at saari/_ui; a source checkout
+    # serves ui/dist instead.
+    _pkg_ui = Path(__file__).resolve().parent / "_ui"
+    _repo_ui = Path(__file__).resolve().parent.parent.parent / "ui" / "dist"
+    ui_dist = _pkg_ui if _pkg_ui.exists() else _repo_ui
     if ui_dist.exists():
         # Serve hashed assets (immutable cache, no fallback) under /assets/
         assets_dir = ui_dist / "assets"

@@ -6,6 +6,8 @@ __pycache__/
 dist/
 build/
 .saari/
+.saaristo/
+src/saari/_ui/
 *.db
 *.db-journal
 .env

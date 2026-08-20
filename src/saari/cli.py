@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json as _json
 from enum import Enum
 from pathlib import Path
 from typing import Annotated
@@ -64,9 +63,12 @@ def init(
         console.print(f"[yellow]Already a saaristo project:[/] {existing}")
         return
     root = paths.init_project(path)
+    scaffolded = paths.scaffold_workspace(root)
     console.print(f"[green]Initialized saaristo project at[/] {root}")
     console.print(f"  {root / '.saaristo'}/      tool-owned state (db, raw/)")
     console.print(f"  {root / 'papers'}/        full-text PDFs and user-visible files")
+    for name in scaffolded:
+        console.print(f"  [cyan]{name}[/]  created/extended (harness wiring)")
 
 
 @app.command()
@@ -85,7 +87,14 @@ def serve(
     import threading
     import webbrowser
 
-    import uvicorn
+    try:
+        import uvicorn
+    except ImportError:
+        console.print(
+            "[red]error:[/] the HTTP server needs the `serve` extra. "
+            "Install with: uv tool install 'saari[serve]' (or pip install 'saari[serve]')"
+        )
+        raise typer.Exit(2)
 
     root = _resolve_root()
     console.print(f"[bold]saari serve[/]  project: {root}")

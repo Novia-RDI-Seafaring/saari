@@ -16,7 +16,9 @@ three-repo archipelago, the paper, the study, the wiki) see `../CLAUDE.md`.
 
 ## Working here
 
-- Use **uv**, never pip: `uv sync`, `uv run <cmd>`.
+- Use **uv**, never pip: `uv sync --all-extras`, `uv run <cmd>`. The
+  `serve` extra holds the HTTP server deps (fastapi, uvicorn, pydantic-ai);
+  the base install is the lean CLI + MCP surface. Tests need the extras.
 - Tests: `uv run pytest -q`. If an issue touches code that has no tests
   yet, **adding the test scaffold is in scope**, not optional.
 - ruff is installed (`uv run ruff check`). A lint CI step is not yet

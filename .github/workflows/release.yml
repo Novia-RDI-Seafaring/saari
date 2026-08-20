@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # PyPI trusted publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Build SPA
+        run: |
+          cd ui
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Bundle SPA into package
+        run: |
+          rm -rf src/saari/_ui
+          cp -r ui/dist src/saari/_ui
+      - uses: astral-sh/setup-uv@v3
+      - name: Run tests
+        run: |
+          uv sync --all-extras
+          uv run pytest -q
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

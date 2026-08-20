@@ -2934,19 +2934,24 @@ wheels = [
 
 [[package]]
 name = "saari"
-version = "0.0.1"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fastapi" },
     { name = "fastembed" },
     { name = "httpx" },
     { name = "mcp" },
     { name = "pydantic" },
-    { name = "pydantic-ai" },
+    { name = "rich" },
     { name = "sqlite-vec" },
-    { name = "sse-starlette" },
     { name = "typer" },
     { name = "umap-learn" },
+]
+
+[package.optional-dependencies]
+serve = [
+    { name = "fastapi" },
+    { name = "pydantic-ai" },
+    { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2958,18 +2963,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.115" },
+    { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.115" },
     { name = "fastembed", specifier = ">=0.8.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mcp", specifier = ">=1.2" },
     { name = "pydantic", specifier = ">=2.8" },
-    { name = "pydantic-ai", specifier = ">=0.0.14" },
+    { name = "pydantic-ai", marker = "extra == 'serve'", specifier = ">=0.0.14" },
+    { name = "rich", specifier = ">=13.0" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
-    { name = "sse-starlette", specifier = ">=2.1" },
+    { name = "sse-starlette", marker = "extra == 'serve'", specifier = ">=2.1" },
     { name = "typer", specifier = ">=0.12" },
     { name = "umap-learn", specifier = ">=0.5.12" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'serve'", specifier = ">=0.32" },
 ]
+provides-extras = ["serve"]
 
 [package.metadata.requires-dev]
 dev = [
