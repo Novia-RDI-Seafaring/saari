@@ -484,7 +484,7 @@ export function Corpus() {
                   const cy = my + (dx / len) * 6;
                   // Direction-of-citation: source cites target, so arrow points at target.
                   // Color by relation to focus: green = focus cites this (outgoing); blue = this cites focus (incoming).
-                  let stroke = "#52525b";
+                  let stroke = "#8b8b96";
                   let markerEnd: string | undefined;
                   if (isFocusEdge) {
                     if (focusId === e.source) {
@@ -507,8 +507,8 @@ export function Corpus() {
                       d={`M ${A.sx} ${A.sy} Q ${cx} ${cy} ${tx} ${ty}`}
                       fill="none"
                       stroke={stroke}
-                      strokeWidth={isFocusEdge ? 1.4 : 0.7}
-                      opacity={isFocusEdge ? 0.9 : 0.18}
+                      strokeWidth={isFocusEdge ? 1.6 : 1}
+                      opacity={isFocusEdge ? 0.95 : 0.4}
                       markerEnd={markerEnd}
                     />
                   );
