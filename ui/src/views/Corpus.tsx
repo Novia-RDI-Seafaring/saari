@@ -91,6 +91,9 @@ export function Corpus() {
 
   const [box, setBox] = useState<BoxSel | null>(null);
   const dragRef = useRef<{ kind: "pan" | "box"; startX: number; startY: number; vb: ViewBox; moved: boolean } | null>(null);
+  // Whether the just-finished gesture was a drag; the click event fires after
+  // mouseup (which nulls dragRef), so background-click handlers read this.
+  const lastGestureMovedRef = useRef(false);
 
   function load() {
     setLoading(true);
@@ -216,6 +219,7 @@ export function Corpus() {
   }
   function onMouseUp() {
     if (!dragRef.current) return;
+    lastGestureMovedRef.current = dragRef.current.moved;
     if (dragRef.current.kind === "box" && box) {
       const minX = Math.min(box.x0, box.x1);
       const maxX = Math.max(box.x0, box.x1);
@@ -429,6 +433,12 @@ export function Corpus() {
               touchAction: "none",
             }}
             onMouseDown={onMouseDown}
+            onClick={() => {
+              // Background click (node clicks stopPropagation): clear the
+              // focused paper, unless this was the tail of a pan/lasso drag.
+              if (lastGestureMovedRef.current) return;
+              if (paperId) setPaperId(null);
+            }}
             onMouseMove={(e) => {
               onMouseMove(e);
               setHoverPos({ x: e.clientX, y: e.clientY });
@@ -469,6 +479,10 @@ export function Corpus() {
                   const a = pointById.get(e.source);
                   const b = pointById.get(e.target);
                   if (!a || !b) return null;
+                  // Filtered-out nodes render dimmed-to-invisible; their
+                  // edges must go with them or the canvas shows lines into
+                  // nothing.
+                  if (!passes(a) || !passes(b)) return null;
                   // Edge involves the focus paper if either endpoint is the focus.
                   const isFocusEdge = focusId === e.source || focusId === e.target;
                   const inSelection = selected.has(e.source) && selected.has(e.target);
