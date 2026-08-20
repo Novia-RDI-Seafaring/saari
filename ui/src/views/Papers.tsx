@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, type PaperCard, type ScreenStatus } from "@/lib/api";
 import { PaperRow } from "@/components/PaperRow";
 import { PaperDetail } from "@/components/PaperDetail";
@@ -11,9 +12,18 @@ const SORTS = ["recent", "cited", "seen_in"] as const;
 type Sort = (typeof SORTS)[number];
 
 export function Papers() {
+  // Deep links (e.g. the Home stepper) can pre-filter: /papers?status=candidate
+  const [searchParams] = useSearchParams();
+  const statusParam = searchParams.get("status");
+  const initialStatus: ScreenStatus | "all" = STATUSES.includes(
+    statusParam as ScreenStatus,
+  )
+    ? (statusParam as ScreenStatus)
+    : "all";
+
   const [list, setList] = useState<PaperCard[]>([]);
   const [total, setTotal] = useState(0);
-  const [status, setStatus] = useState<ScreenStatus | "all">("all");
+  const [status, setStatus] = useState<ScreenStatus | "all">(initialStatus);
   const [titleGrep, setTitleGrep] = useState("");
   const [sort, setSort] = useState<Sort>("cited");
   const [paperId, setPaperId] = useState<string | null>(null);

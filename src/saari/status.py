@@ -137,11 +137,12 @@ def build_stages(
             "state": screen_state,
             "detail": screen_detail,
             "hint": (
-                "Decide include/exclude/maybe for every candidate, and record the "
-                "reason against the criteria. Reasons become the PRISMA exclusion "
-                "box."
+                "Work through the candidate queue: click a paper, read the "
+                "abstract, and decide include/exclude/maybe with a reason "
+                "against the criteria. Done = zero candidates and zero maybes. "
+                "Reasons become the PRISMA exclusion box."
             ),
-            "view": "/papers",
+            "view": "/papers?status=candidate",
         },
         {
             "key": "snowball",
@@ -149,10 +150,11 @@ def build_stages(
             "state": snowball_state,
             "detail": snowball_detail,
             "hint": (
-                "Expand included papers' references and citers, screen what "
-                "arrives, and repeat until a round finds nothing new (saturation)."
+                "Open an included paper and press snowball (in its detail "
+                "panel) to pull in its references and citers. Screen what "
+                "arrives; repeat until a round finds nothing new (saturation)."
             ),
-            "view": "/searches",
+            "view": "/papers?status=included",
         },
         {
             "key": "report",
