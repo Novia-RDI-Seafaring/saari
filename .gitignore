@@ -14,3 +14,4 @@ src/saari/_ui/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.playwright-cli/
