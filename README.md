@@ -87,6 +87,23 @@ my-paper/
 Delete `.saaristo/` and the project is gone; zip the folder and the whole
 review travels with it.
 
+## Hosted mode (experimental)
+
+saari is local-first, but every surface can also run multi-user behind an
+authenticating proxy (e.g. Azure Container Apps with Entra ID "Easy Auth"):
+
+```bash
+SAARI_DATA_ROOT=/data saari serve          # HTTP API + UI, per-user projects
+SAARI_DATA_ROOT=/data saari-mcp --http     # MCP over streamable HTTP (for
+                                           # Copilot Studio and remote hosts)
+```
+
+Each request is scoped to `$SAARI_DATA_ROOT/<user>/<project>/` from the
+`x-ms-client-principal-id` (or `x-saari-user`) and `x-saari-project`
+headers. The auth layer in front must inject these; saari trusts them.
+Requests without an identity get 401. Without `SAARI_DATA_ROOT`, nothing
+changes: single project, resolved from the working directory.
+
 ## Development
 
 ```bash

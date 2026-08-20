@@ -174,6 +174,10 @@ REVIEW_EDITABLE: set[str] = {"paper.md", "slides.md"}
 # ---------- app factory ----------
 
 
+class ProjectCreate(BaseModel):
+    name: str
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="saari", version="0.0.1")
 
@@ -184,6 +188,12 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Hosted (multi-user) mode: when SAARI_DATA_ROOT is set, scope every
+    # request to the caller's project directory. No-op locally.
+    from saari.hosting import RequestRootMiddleware
+
+    app.add_middleware(RequestRootMiddleware)
 
     @app.exception_handler(paths.ProjectNotFoundError)
     async def _no_project(_: Request, exc: paths.ProjectNotFoundError) -> JSONResponse:
@@ -196,6 +206,49 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {"ok": True}
+
+    @app.get("/api/projects")
+    def projects_list(request: Request) -> dict[str, Any]:
+        from saari import hosting
+
+        base = hosting.data_root()
+        if base is None:
+            root = paths.project_root()
+            return {"hosted": False, "projects": [root.name], "active": root.name}
+        user = next(
+            (request.headers.get(h) for h in hosting.USER_HEADERS if request.headers.get(h)),
+            None,
+        )
+        if user is None:
+            raise HTTPException(401, "missing identity header")
+        active = request.headers.get(hosting.PROJECT_HEADER) or hosting.DEFAULT_PROJECT
+        return {
+            "hosted": True,
+            "projects": hosting.list_projects(base / user),
+            "active": active,
+        }
+
+    @app.post("/api/projects")
+    def projects_create(body: ProjectCreate, request: Request) -> dict[str, Any]:
+        from saari import hosting
+
+        base = hosting.data_root()
+        if base is None:
+            raise HTTPException(400, "project creation is only available in hosted mode")
+        user = next(
+            (request.headers.get(h) for h in hosting.USER_HEADERS if request.headers.get(h)),
+            None,
+        )
+        if user is None:
+            raise HTTPException(401, "missing identity header")
+        try:
+            root = hosting.resolve_hosted_root(
+                {hosting.USER_HEADERS[1]: user, hosting.PROJECT_HEADER: body.name}
+            )
+        except ValueError:
+            raise HTTPException(400, "invalid project name") from None
+        assert root is not None
+        return {"name": body.name, "root": str(root)}
 
     @app.get("/api/project")
     def project_info() -> dict[str, Any]:
