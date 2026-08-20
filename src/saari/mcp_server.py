@@ -704,7 +704,38 @@ def funnel() -> dict[str, Any]:
 
 
 def main() -> None:
-    mcp.run()
+    """Run the MCP server.
+
+    Default: stdio, for local harnesses (Claude Code, Claude Desktop) that
+    spawn the process per project directory.
+
+    `saari-mcp --http` serves the same tools over streamable HTTP for remote
+    hosts (Copilot Studio, hosted deployments). With SAARI_DATA_ROOT set,
+    each request is scoped to the caller's project directory via the shared
+    hosting middleware; without it, the server serves the project it was
+    started in, like stdio mode.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="saari-mcp")
+    parser.add_argument("--http", action="store_true", help="serve streamable HTTP instead of stdio")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=3045)
+    args = parser.parse_args()
+
+    if not args.http:
+        mcp.run()
+        return
+
+    import uvicorn
+
+    from saari.hosting import RequestRootMiddleware
+
+    # Stateless: no server-side session pinning, so replicas stay
+    # interchangeable and simple HTTP clients work.
+    mcp.settings.stateless_http = True
+    app = RequestRootMiddleware(mcp.streamable_http_app())
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

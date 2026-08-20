@@ -9,9 +9,29 @@ from __future__ import annotations
 
 import json
 import os
+from contextvars import ContextVar, Token
 from pathlib import Path
 
 MARKER = ".saaristo"
+
+# Request-scoped project root. In hosted (multi-user) mode, middleware sets
+# this per request from the caller's identity; locally it stays unset and
+# resolution falls through to the env var / cwd walk. A contextvar (rather
+# than a global) keeps concurrent requests for different users isolated.
+_request_root: ContextVar[Path | None] = ContextVar("saari_request_root", default=None)
+
+
+def set_request_root(root: Path | None) -> Token:
+    """Bind the project root for the current async/task context.
+
+    Returns the contextvars token; pass it to `reset_request_root` when the
+    request is done.
+    """
+    return _request_root.set(root)
+
+
+def reset_request_root(token: Token) -> None:
+    _request_root.reset(token)
 
 
 class ProjectNotFoundError(RuntimeError):
@@ -31,9 +51,18 @@ def project_root(start: Path | None = None) -> Path:
     """Resolve the project root or raise ProjectNotFoundError.
 
     Precedence:
-      1. SAARI_PROJECT_ROOT env var (must point to a directory containing .saaristo/)
-      2. Walk upward from `start` or cwd
+      1. Request-scoped root (hosted mode; set by middleware per request)
+      2. SAARI_PROJECT_ROOT env var (must point to a directory containing .saaristo/)
+      3. Walk upward from `start` or cwd
     """
+    scoped = _request_root.get()
+    if scoped is not None:
+        if not (scoped / MARKER).is_dir():
+            raise ProjectNotFoundError(
+                f"Request-scoped root {scoped} does not contain {MARKER}/."
+            )
+        return scoped
+
     env = os.environ.get("SAARI_PROJECT_ROOT")
     if env:
         root = Path(env).expanduser().resolve()
