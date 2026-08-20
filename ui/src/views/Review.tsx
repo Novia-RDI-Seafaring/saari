@@ -62,6 +62,7 @@ export function Review() {
     try {
       const r = await api.exportSlr();
       setMsg(`Generated bundle · ${r.n_entries} included papers`);
+      window.dispatchEvent(new Event("saari:changed"));
       await loadList();
       setTimeout(() => setMsg(null), 6000);
     } catch (e) {

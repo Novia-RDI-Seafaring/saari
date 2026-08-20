@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { api, type ProjectInfo } from "@/lib/api";
 import { Home, Search, ScatterChart, Network, Database, FileDown, FileText, Loader2 } from "lucide-react";
 import { ChatPanel } from "./ChatPanel";
+import { StageDots } from "./Stepper";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 
@@ -103,6 +104,7 @@ export function Layout() {
               {label}
             </NavLink>
           ))}
+          <StageDots />
         </nav>
         <main className="flex-1 min-w-0 min-h-0 flex">
           <Outlet />

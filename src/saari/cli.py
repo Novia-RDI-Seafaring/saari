@@ -138,6 +138,29 @@ def where() -> None:
 
 
 @app.command()
+def status() -> None:
+    """Show where the systematic review stands: the five SLR stages.
+
+    States are derived from the project DB (nothing is tracked by hand).
+    The arrow marks the recommended next stage. Same data as the web UI
+    stepper and the `review_status` MCP tool.
+    """
+    from saari.status import stages_data
+
+    root = _resolve_root()
+    data = stages_data(project_root=root)
+    console.print(f"[bold]review status[/]  project: {root}\n")
+    marks = {"done": "[green]✓[/]", "active": "[yellow]◐[/]", "todo": "[dim]○[/]"}
+    for s in data["stages"]:
+        arrow = "[cyan]→[/]" if s["key"] == data["next"] else " "
+        console.print(f" {arrow} {marks[s['state']]} [bold]{s['label']:<9}[/] {s['detail']}")
+        if s["key"] == data["next"]:
+            console.print(f"      [dim]{s['hint']}[/]")
+    if data["next"] is None:
+        console.print("\n[green]All stages complete.[/]")
+
+
+@app.command()
 def refresh() -> None:
     """Run embed + project + canvas in one shot.
 

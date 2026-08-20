@@ -126,6 +126,20 @@ async function getText(path: string): Promise<string> {
   return r.text();
 }
 
+export interface Stage {
+  key: string;
+  label: string;
+  state: "done" | "active" | "todo";
+  detail: string;
+  hint: string;
+  view: string;
+}
+
+export interface Stages {
+  stages: Stage[];
+  next: string | null;
+}
+
 export interface ReviewFile {
   name: string;
   size: number;
@@ -136,6 +150,7 @@ export interface ReviewFile {
 export const api = {
   health: () => get<{ ok: boolean }>("/api/health"),
   project: () => get<ProjectInfo>("/api/project"),
+  stages: () => get<Stages>("/api/stages"),
 
   papers: (params: Record<string, string | number | boolean | undefined> = {}) => {
     const q = new URLSearchParams();

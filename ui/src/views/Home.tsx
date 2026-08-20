@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Study, type Funnel } from "@/lib/api";
+import { Stepper } from "@/components/Stepper";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -46,6 +47,7 @@ export function Home() {
       });
       setStudy(updated);
       setEditing(false);
+      window.dispatchEvent(new Event("saari:changed"));
     } finally {
       setSaving(false);
     }
@@ -54,6 +56,8 @@ export function Home() {
   return (
     <div className="flex-1 min-w-0 overflow-y-auto">
       <div className="max-w-4xl mx-auto p-6 space-y-6">
+        <Stepper />
+
         {/* Study card */}
         <Card className="p-5">
           <div className="flex items-start justify-between gap-3 mb-3">
