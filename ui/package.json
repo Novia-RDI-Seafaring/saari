@@ -1,5 +1,6 @@
 {
   "name": "saari-ui",
+  "packageManager": "pnpm@10.24.0",
   "private": true,
   "version": "0.0.1",
   "type": "module",

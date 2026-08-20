@@ -99,8 +99,14 @@ def serve(
         )
         raise typer.Exit(2)
 
-    root = _resolve_root()
-    console.print(f"[bold]saari serve[/]  project: {root}")
+    from saari.hosting import data_root
+
+    hosted = data_root()
+    if hosted is not None:
+        console.print(f"[bold]saari serve[/]  hosted mode, data root: {hosted}")
+    else:
+        root = _resolve_root()
+        console.print(f"[bold]saari serve[/]  project: {root}")
     console.print(f"  API:    http://{host}:{port}/api")
     console.print(f"  docs:   http://{host}:{port}/docs")
     console.print(f"  UI:     http://{host}:{port}/")

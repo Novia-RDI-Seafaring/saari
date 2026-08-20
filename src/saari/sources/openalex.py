@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +13,9 @@ from saari import paths
 from saari.models import Author, Location, Paper
 
 BASE_URL = "https://api.openalex.org"
-DEFAULT_MAILTO = "info.graceful.ai@gmail.com"
+# OpenAlex "polite pool": identify the operator. Override in deployments
+# (all users of a hosted instance share one egress IP).
+DEFAULT_MAILTO = os.environ.get("OPENALEX_MAILTO", "info.graceful.ai@gmail.com")
 
 _ARXIV_URL_RE = re.compile(r"arxiv\.org/(?:abs|pdf)/([^/?#v]+)", re.IGNORECASE)
 _PMID_URL_RE = re.compile(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", re.IGNORECASE)
