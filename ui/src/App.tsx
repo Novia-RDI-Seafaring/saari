@@ -5,6 +5,7 @@ import { Searches } from "./views/Searches";
 import { Corpus } from "./views/Corpus";
 import { Graph } from "./views/Graph";
 import { Papers } from "./views/Papers";
+import { Review } from "./views/Review";
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="corpus" element={<Corpus />} />
         <Route path="graph" element={<Graph />} />
         <Route path="papers" element={<Papers />} />
+        <Route path="review" element={<Review />} />
       </Route>
     </Routes>
   );

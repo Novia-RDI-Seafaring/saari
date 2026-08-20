@@ -9,13 +9,19 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from saari import canvas as _canvas_mod, db, paths
+from saari import canvas as _canvas_mod, db, paths, study as _study
 from saari.embed import (
     embed_papers as _embed_papers,
     query_corpus as _query_corpus,
     similar_to_paper as _similar_to_paper,
 )
-from saari.export import export_bibtex as _export_bibtex
+from saari.export import (
+    export_bibtex as _export_bibtex,
+    export_paper as _export_paper,
+    export_prisma as _export_prisma,
+    export_slides as _export_slides,
+    export_slr as _export_slr,
+)
 from saari.models import Paper
 from saari.projection import project_corpus as _project_corpus
 from saari.snowball import snowball as _snowball
@@ -681,6 +687,83 @@ def export_bibtex_cmd(
         f"[green]Wrote[/] {r.n_entries} {status or 'all'} papers  "
         f"format={r.format}  path={r.path}"
     )
+
+
+@export_app.command("prisma")
+def export_prisma_cmd(
+    out: Annotated[Path | None, typer.Option("--out", help="Output path (default: papers/prisma.svg)")] = None,
+    fmt: Annotated[str, typer.Option("--fmt", help="svg | mermaid")] = "svg",
+) -> None:
+    """Render the PRISMA 2020 flow diagram (SVG or Mermaid)."""
+    root = _resolve_root()
+    ext = "mmd" if fmt == "mermaid" else "svg"
+    target = out or (paths.papers_dir(root) / f"prisma.{ext}")
+    r = _export_prisma(target, fmt=fmt, project_root=root)
+    console.print(f"[green]Wrote[/] {r.format}  included={r.n_entries}  path={r.path}")
+
+
+@export_app.command("paper")
+def export_paper_cmd(
+    out: Annotated[Path | None, typer.Option("--out", help="Output path (default: papers/paper.md)")] = None,
+) -> None:
+    """Assemble the Markdown SLR manuscript (writes prisma.svg, landscape.svg, refs.bib alongside)."""
+    root = _resolve_root()
+    target = out or (paths.papers_dir(root) / "paper.md")
+    r = _export_paper(target, project_root=root)
+    console.print(f"[green]Wrote[/] manuscript with {r.n_entries} included papers  path={r.path}")
+
+
+@export_app.command("slides")
+def export_slides_cmd(
+    out: Annotated[Path | None, typer.Option("--out", help="Output path (default: papers/slides.md)")] = None,
+) -> None:
+    """Assemble the Marp slide deck (Markdown; render with `npx @marp-team/marp-cli`)."""
+    root = _resolve_root()
+    target = out or (paths.papers_dir(root) / "slides.md")
+    r = _export_slides(target, project_root=root)
+    console.print(f"[green]Wrote[/] deck  path={r.path}")
+
+
+@export_app.command("slr")
+def export_slr_cmd(
+    out: Annotated[Path | None, typer.Option("--out", help="Output dir (default: papers/review/)")] = None,
+) -> None:
+    """One-shot: emit the whole review bundle (paper + slides + PRISMA + figures + bib)."""
+    root = _resolve_root()
+    r = _export_slr(out, project_root=root)
+    console.print(
+        f"[green]Wrote review bundle[/] ({r.n_entries} included papers) -> {r.path}\n"
+        f"  paper.md · slides.md · prisma.svg · prisma.mmd · landscape.svg · refs.bib"
+    )
+
+
+study_app = typer.Typer(help="Study protocol: title, research question, criteria", no_args_is_help=True)
+app.add_typer(study_app, name="study")
+
+
+@study_app.command("show")
+def study_show_cmd() -> None:
+    """Print the study protocol (research question, eligibility criteria, tags)."""
+    root = _resolve_root()
+    console.print_json(data=_study.get(root))
+
+
+@study_app.command("set")
+def study_set_cmd(
+    title: Annotated[str | None, typer.Option("--title")] = None,
+    authors: Annotated[str | None, typer.Option("--authors")] = None,
+    question: Annotated[str | None, typer.Option("--question", help="Research question")] = None,
+    criteria: Annotated[str | None, typer.Option("--criteria", help="Inclusion/exclusion criteria")] = None,
+    tags: Annotated[str | None, typer.Option("--tags", help="Comma-separated tags")] = None,
+) -> None:
+    """Set / patch the study protocol. Only fields you pass change."""
+    root = _resolve_root()
+    tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags is not None else None
+    rec = _study.update(
+        title=title, authors=authors, question=question,
+        criteria=criteria, tags=tag_list, project_root=root,
+    )
+    console.print_json(data=rec)
 
 
 @searches_app.command("list")

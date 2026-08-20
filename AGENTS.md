@@ -41,6 +41,26 @@ agent (MCP), a shell user (CLI), and a UI / HTTP client get the same
 capability. Mirror an op across `cli.py`, `mcp_server.py`, and `server.py`
 rather than shipping one in isolation.
 
+## SLR reporting surface
+
+`saari` compiles a screened corpus into a systematic-literature-review draft.
+Set the protocol (`study set --title/--question/--criteria`), search + snowball,
+screen (`screen` with notes), then `export`:
+
+- `export prisma` — PRISMA 2020 flow diagram (SVG or Mermaid) from the funnel.
+- `export paper` — Markdown SLR manuscript scaffold (Methods + PRISMA + study
+  characteristics table + theme sections + references).
+- `export slides` — Marp slide deck.
+- `export slr` — one-shot bundle into `papers/review/` (the headless entry point).
+
+Core logic lives in `report.py` (pure, injected-data builders + `*_data` DB
+wrappers); `export.py` holds the file-writing entry points. **Governing rule:
+never fabricate.** Mechanical/true content is auto-filled and traces to the DB;
+themes come from OpenAlex's own per-paper topics; interpretive prose is emitted
+as `<!-- WRITE: ... -->` slots. An honest Limitations block (single source,
+single reviewer, abstract-only, unregistered) is always written so drafts cannot
+overclaim. Keep all three surfaces (CLI/MCP/HTTP) in parity for every new op.
+
 ## GitHub issue work loop
 
 This repo is worked by an autonomous issue loop (the maintainer's harness

@@ -120,6 +120,19 @@ async function put<T>(path: string, body?: unknown): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+async function getText(path: string): Promise<string> {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}: ${await r.text()}`);
+  return r.text();
+}
+
+export interface ReviewFile {
+  name: string;
+  size: number;
+  format: string;
+  editable: boolean;
+}
+
 export const api = {
   health: () => get<{ ok: boolean }>("/api/health"),
   project: () => get<ProjectInfo>("/api/project"),
@@ -195,6 +208,21 @@ export const api = {
     post<{ path: string; n_entries: number; format: string }>(
       `/api/export/bibtex${status ? `?status=${encodeURIComponent(status)}` : ""}`,
     ),
+
+  // ---- SLR review bundle: generate, list, read, edit, download ----
+  exportSlr: () =>
+    post<{ path: string; n_entries: number; format: string }>("/api/export/slr"),
+  reviewList: () =>
+    get<{ exists: boolean; dir: string; files: ReviewFile[] }>("/api/review"),
+  reviewFile: (name: string) =>
+    getText(`/api/review/file/${encodeURIComponent(name)}`),
+  saveReviewFile: (name: string, content: string) =>
+    put<{ name: string; ok: boolean; size: number }>(
+      `/api/review/file/${encodeURIComponent(name)}`,
+      { content },
+    ),
+  reviewFileUrl: (name: string, opts?: { download?: boolean }) =>
+    `/api/review/file/${encodeURIComponent(name)}${opts?.download ? "?download=1" : ""}`,
 
   edges: () =>
     get<{ n: number; edges: Array<{ source: string; target: string }> }>("/api/edges"),

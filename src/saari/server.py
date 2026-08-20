@@ -34,7 +34,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -45,7 +45,13 @@ from saari.embed import (
     query_corpus as _query_corpus,
     similar_to_paper as _similar_to_paper,
 )
-from saari.export import export_bibtex as _export_bibtex
+from saari.export import (
+    export_bibtex as _export_bibtex,
+    export_paper as _export_paper,
+    export_prisma as _export_prisma,
+    export_slides as _export_slides,
+    export_slr as _export_slr,
+)
 from saari.models import Paper
 from saari.projection import (
     get_projection as _get_projection,
@@ -141,9 +147,28 @@ class ProjectIn(BaseModel):
 
 
 class StudyIn(BaseModel):
+    title: str | None = None
+    authors: str | None = None
     question: str | None = None
     criteria: str | None = None
     tags: list[str] | None = None
+
+
+class ReviewFileIn(BaseModel):
+    content: str
+
+
+# The review bundle's files, with their served content-type. This doubles as the
+# path-safety allow-list: only these bare basenames are ever read or written.
+REVIEW_FILES: dict[str, str] = {
+    "paper.md": "text/markdown; charset=utf-8",
+    "slides.md": "text/markdown; charset=utf-8",
+    "prisma.svg": "image/svg+xml",
+    "landscape.svg": "image/svg+xml",
+    "prisma.mmd": "text/plain; charset=utf-8",
+    "refs.bib": "text/plain; charset=utf-8",
+}
+REVIEW_EDITABLE: set[str] = {"paper.md", "slides.md"}
 
 
 # ---------- app factory ----------
@@ -534,6 +559,8 @@ def create_app() -> FastAPI:
     @app.put("/api/study")
     def study_put(body: StudyIn) -> dict[str, Any]:
         return _study.update(
+            title=body.title,
+            authors=body.authors,
             question=body.question,
             criteria=body.criteria,
             tags=body.tags,
@@ -579,6 +606,83 @@ def create_app() -> FastAPI:
         target = paths.papers_dir(root) / "refs.bib"
         r = _export_bibtex(target, status_filter=status, project_root=root)
         return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+    @app.post("/api/export/prisma")
+    def export_prisma(fmt: str = "svg") -> dict[str, Any]:
+        root = paths.project_root()
+        ext = "mmd" if fmt == "mermaid" else "svg"
+        target = paths.papers_dir(root) / f"prisma.{ext}"
+        r = _export_prisma(target, fmt=fmt, project_root=root)
+        return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+    @app.post("/api/export/paper")
+    def export_paper() -> dict[str, Any]:
+        root = paths.project_root()
+        r = _export_paper(paths.papers_dir(root) / "paper.md", project_root=root)
+        return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+    @app.post("/api/export/slides")
+    def export_slides() -> dict[str, Any]:
+        root = paths.project_root()
+        r = _export_slides(paths.papers_dir(root) / "slides.md", project_root=root)
+        return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+    @app.post("/api/export/slr")
+    def export_slr() -> dict[str, Any]:
+        root = paths.project_root()
+        r = _export_slr(None, project_root=root)
+        return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+    # ---------- review bundle: list / serve / edit / download ----------
+
+    def _review_dir() -> Path:
+        return paths.papers_dir(paths.project_root()) / "review"
+
+    def _review_target(name: str) -> Path:
+        # `name` is a path param without `:path`, so it can never contain `/`;
+        # the allow-list rejects anything that is not a known bundle file.
+        if name not in REVIEW_FILES:
+            raise HTTPException(status_code=404, detail=f"unknown review file: {name!r}")
+        return _review_dir() / name
+
+    @app.get("/api/review")
+    def review_list() -> dict[str, Any]:
+        d = _review_dir()
+        files = [
+            {
+                "name": name,
+                "size": (d / name).stat().st_size,
+                "format": ctype,
+                "editable": name in REVIEW_EDITABLE,
+            }
+            for name, ctype in REVIEW_FILES.items()
+            if (d / name).exists()
+        ]
+        return {"exists": bool(files), "dir": str(d), "files": files}
+
+    @app.get("/api/review/file/{name}")
+    def review_file_get(name: str, download: bool = False) -> Response:
+        target = _review_target(name)
+        if not target.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"{name} not generated yet — run export first.",
+            )
+        headers = (
+            {"Content-Disposition": f'attachment; filename="{name}"'} if download else {}
+        )
+        return Response(
+            content=target.read_bytes(), media_type=REVIEW_FILES[name], headers=headers
+        )
+
+    @app.put("/api/review/file/{name}")
+    def review_file_put(name: str, body: ReviewFileIn) -> dict[str, Any]:
+        if name not in REVIEW_EDITABLE:
+            raise HTTPException(status_code=400, detail=f"{name} is not editable")
+        target = _review_target(name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body.content)
+        return {"name": name, "ok": True, "size": target.stat().st_size}
 
     # ---------- agent (SSE) ----------
 

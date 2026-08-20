@@ -24,7 +24,13 @@ from saari.embed import (
     query_corpus as _query_corpus,
     similar_to_paper as _similar_to_paper,
 )
-from saari.export import export_bibtex as _export_bibtex
+from saari.export import (
+    export_bibtex as _export_bibtex,
+    export_paper as _export_paper,
+    export_prisma as _export_prisma,
+    export_slides as _export_slides,
+    export_slr as _export_slr,
+)
 from saari.models import Paper
 from saari.projection import project_corpus as _project_corpus
 from saari.snowball import snowball as _snowball
@@ -549,6 +555,57 @@ def export_bibtex(
 
 
 @mcp.tool()
+def export_prisma(fmt: str = "svg", out: str | None = None) -> dict[str, Any]:
+    """Render the PRISMA 2020 flow diagram from the screening funnel.
+
+    `fmt`: 'svg' (default, self-contained) | 'mermaid'. Defaults to
+    `papers/prisma.svg`. Counts trace to the DB via `funnel()`.
+    """
+    root = paths.project_root()
+    ext = "mmd" if fmt == "mermaid" else "svg"
+    target = Path(out) if out else paths.papers_dir(root) / f"prisma.{ext}"
+    r = _export_prisma(target, fmt=fmt, project_root=root)
+    return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+
+@mcp.tool()
+def export_paper(out: str | None = None) -> dict[str, Any]:
+    """Assemble the Markdown SLR manuscript scaffold (default `papers/paper.md`).
+
+    Mechanical content (PRISMA counts, search-strategy table, study-characteristics
+    table, references, figures) is auto-filled and traceable; synthesis is left as
+    `<!-- WRITE -->` slots for a human/LLM. Also writes prisma.svg, landscape.svg,
+    refs.bib alongside. Set the protocol first with `study_set`.
+    """
+    root = paths.project_root()
+    target = Path(out) if out else paths.papers_dir(root) / "paper.md"
+    r = _export_paper(target, project_root=root)
+    return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+
+@mcp.tool()
+def export_slides(out: str | None = None) -> dict[str, Any]:
+    """Assemble the Marp slide deck (default `papers/slides.md`)."""
+    root = paths.project_root()
+    target = Path(out) if out else paths.papers_dir(root) / "slides.md"
+    r = _export_slides(target, project_root=root)
+    return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+
+@mcp.tool()
+def export_slr(out_dir: str | None = None) -> dict[str, Any]:
+    """One-shot: emit the full review bundle (paper + slides + PRISMA + figures + bib).
+
+    The headless entry point — turns a screened corpus into
+    `papers/review/{paper.md, slides.md, prisma.svg, prisma.mmd, landscape.svg,
+    refs.bib}`. Set the protocol (`study_set`) and screen papers first.
+    """
+    root = paths.project_root()
+    r = _export_slr(Path(out_dir) if out_dir else None, project_root=root)
+    return {"path": r.path, "n_entries": r.n_entries, "format": r.format}
+
+
+@mcp.tool()
 def refresh() -> dict[str, Any]:
     """One-shot: embed new papers, re-project, regenerate canvas artifacts.
 
@@ -595,12 +652,16 @@ def study_get() -> dict[str, Any]:
 
 @mcp.tool()
 def study_set(
+    title: str | None = None,
+    authors: str | None = None,
     question: str | None = None,
     criteria: str | None = None,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
     """Set / patch study metadata. Only fields you pass change.
 
+    - `title`: manuscript title (used by `export_paper`).
+    - `authors`: author line (free text).
     - `question`: the research question (markdown OK).
     - `criteria`: inclusion/exclusion criteria (markdown OK).
     - `tags`: free-form tags. Pass `[]` to clear, `None` to leave alone.
@@ -608,6 +669,8 @@ def study_set(
     Returns the full updated study record.
     """
     return _study.update(
+        title=title,
+        authors=authors,
         question=question,
         criteria=criteria,
         tags=tags,

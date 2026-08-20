@@ -149,3 +149,97 @@ def export_bibtex(
     header_bits.append(f"% {len(entries)} entries")
     out.write_text("\n".join(header_bits) + "\n\n" + "\n\n".join(entries) + "\n")
     return ExportResult(path=str(out), n_entries=len(entries), format="bibtex")
+
+
+# --------------------------------------------------------------------------- #
+# SLR report artifacts (PRISMA diagram, manuscript, slides, one-shot bundle).
+# `report` is imported lazily inside each function: report.py imports
+# `_citation_key` from this module, so a top-level import would be circular.
+# --------------------------------------------------------------------------- #
+
+def _figures(root: Path, out_dir: Path) -> None:
+    """Write the two shared figures (`prisma.svg`, `landscape.svg`) into out_dir."""
+    from saari import report
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "prisma.svg").write_text(report.render_prisma_svg(report.prisma_data(root)))
+    (out_dir / "landscape.svg").write_text(
+        report.render_landscape_svg(report.landscape_points(root))
+    )
+
+
+def export_prisma(
+    out: Path, fmt: str = "svg", project_root: Path | None = None
+) -> ExportResult:
+    """Render the PRISMA 2020 flow diagram. `fmt`: 'svg' (default) | 'mermaid'."""
+    from saari import report
+
+    root = project_root or paths.project_root()
+    data = report.prisma_data(root)
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "mermaid":
+        out.write_text(report.render_prisma_mermaid(data))
+        fmt_label = "prisma.mmd"
+    else:
+        out.write_text(report.render_prisma_svg(data))
+        fmt_label = "prisma.svg"
+    return ExportResult(path=str(out), n_entries=data["n_included"], format=fmt_label)
+
+
+def export_paper(out: Path, project_root: Path | None = None) -> ExportResult:
+    """Assemble the Markdown SLR manuscript scaffold.
+
+    Writes `paper.md` plus its companions (`prisma.svg`, `landscape.svg`,
+    `refs.bib`) into the same directory. Mechanical content is filled;
+    synthesis is left as `<!-- WRITE -->` slots.
+    """
+    from saari import report, study
+
+    root = project_root or paths.project_root()
+    out = Path(out)
+    out_dir = out.parent
+    prisma = report.prisma_data(root)
+    funnel = study.funnel(root)
+    themes = report.theme_groups(root, status="included")
+    with db.connect(paths.db_path(root)) as con:
+        included = db.list_papers(
+            con, limit=1_000_000, status="included",
+            order_by="year ASC NULLS LAST, first_seen_at ASC",
+        )
+    md = report.build_paper_md(study.get(root), prisma, funnel["searches"], themes, included)
+    _figures(root, out_dir)
+    export_bibtex(out_dir / "refs.bib", status_filter="included", project_root=root)
+    out.write_text(md)
+    return ExportResult(path=str(out), n_entries=len(included), format="paper.md")
+
+
+def export_slides(out: Path, project_root: Path | None = None) -> ExportResult:
+    """Assemble the Marp slide deck (writes companion figures alongside)."""
+    from saari import report, study
+
+    root = project_root or paths.project_root()
+    out = Path(out)
+    prisma = report.prisma_data(root)
+    themes = report.theme_groups(root, status="included")
+    md = report.build_slides_md(study.get(root), prisma, themes)
+    _figures(root, out.parent)
+    out.write_text(md)
+    n = sum(len(v) for v in themes.values())
+    return ExportResult(path=str(out), n_entries=n, format="slides.md")
+
+
+def export_slr(out_dir: Path | None = None, project_root: Path | None = None) -> ExportResult:
+    """One-shot: emit the whole review bundle (paper + slides + figures + bib).
+
+    This is the headless entry point — a harness calls it to turn a screened
+    corpus into `papers/review/{paper.md, slides.md, prisma.svg, landscape.svg,
+    prisma.mmd, refs.bib}`.
+    """
+    root = project_root or paths.project_root()
+    target = Path(out_dir) if out_dir else (paths.papers_dir(root) / "review")
+    target.mkdir(parents=True, exist_ok=True)
+    export_prisma(target / "prisma.mmd", fmt="mermaid", project_root=root)
+    paper = export_paper(target / "paper.md", project_root=root)  # also writes svgs + refs.bib
+    export_slides(target / "slides.md", project_root=root)
+    return ExportResult(path=str(target), n_entries=paper.n_entries, format="slr-bundle")
