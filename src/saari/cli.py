@@ -88,11 +88,14 @@ def serve(
     import webbrowser
 
     try:
+        # fastapi is the reliable probe: uvicorn also arrives transitively
+        # via the mcp dependency, so its import succeeding proves nothing.
+        import fastapi  # noqa: F401
         import uvicorn
     except ImportError:
         console.print(
             "[red]error:[/] the HTTP server needs the `serve` extra. "
-            "Install with: uv tool install 'saari[serve]' (or pip install 'saari[serve]')"
+            r"Install with: uv tool install 'saari\[serve]' (or pip install 'saari\[serve]')"
         )
         raise typer.Exit(2)
 
