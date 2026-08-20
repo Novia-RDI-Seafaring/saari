@@ -55,6 +55,7 @@ export function PaperDetail({
     setBusy(decision);
     try {
       await api.screen(paper.id, decision, noteDirty ? note : undefined);
+      window.dispatchEvent(new Event("saari:changed"));
       const p = await api.paper(paper.id);
       setPaper(p);
       setNote(p.screening_note ?? "");

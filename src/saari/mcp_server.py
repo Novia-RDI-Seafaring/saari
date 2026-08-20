@@ -109,6 +109,21 @@ def project_info() -> dict[str, Any]:
 
 
 @mcp.tool()
+def review_status() -> dict[str, Any]:
+    """Where the systematic review stands: the five SLR stages, derived from the DB.
+
+    Stages: protocol -> search -> screen -> snowball -> report. Each has
+    `state` (done | active | todo), a factual `detail`, and a methodology
+    `hint`. `next` names the first stage that is not done -- the recommended
+    place to work. Use this to answer "where are we?" and to pick the next
+    action; the same data drives the stepper in the web UI.
+    """
+    from saari.status import stages_data
+
+    return stages_data(project_root=paths.project_root())
+
+
+@mcp.tool()
 def search(
     query: str,
     limit: int = 25,

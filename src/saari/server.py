@@ -573,6 +573,12 @@ def create_app() -> FastAPI:
     def funnel() -> dict[str, Any]:
         return _study.funnel(project_root=paths.project_root())
 
+    @app.get("/api/stages")
+    def stages() -> dict[str, Any]:
+        from saari.status import stages_data
+
+        return stages_data(project_root=paths.project_root())
+
     # ---------- citation edges (intra-corpus) ----------
 
     @app.get("/api/edges")

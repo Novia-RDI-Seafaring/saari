@@ -272,6 +272,7 @@ export function Corpus() {
     setBulkBusy(decision);
     try {
       await api.screenBatch(Array.from(selected), decision);
+      window.dispatchEvent(new Event("saari:changed"));
       setSelected(new Set());
       await load();
     } finally {
