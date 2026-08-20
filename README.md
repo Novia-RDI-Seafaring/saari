@@ -104,6 +104,10 @@ headers. The auth layer in front must inject these; saari trusts them.
 Requests without an identity get 401. Without `SAARI_DATA_ROOT`, nothing
 changes: single project, resolved from the working directory.
 
+A `Dockerfile` ships in the repo (SPA build + `saari[serve]`, default CMD
+`saari serve`); `docs/hosting.md` walks through an Azure Container Apps +
+Entra ID deployment.
+
 ## Development
 
 ```bash
