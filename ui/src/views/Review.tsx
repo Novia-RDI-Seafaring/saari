@@ -1,13 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { FileDown, Loader2, Save, Sparkles, ChevronLeft, ChevronRight } from "lucide-react";
+import { FileDown, Loader2, Save, Sparkles } from "lucide-react";
 import { api, type ReviewFile } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-type Tab = "slides" | "paper" | "figures";
-const EDITABLE: Record<Tab, string> = { slides: "slides.md", paper: "paper.md", figures: "" };
+type Tab = "paper" | "figures";
+const EDITABLE: Record<Tab, string> = { paper: "paper.md", figures: "" };
+
+// The generated markdown carries `<!-- WRITE: ... -->` authoring slots and
+// provenance comments. In the preview, surface WRITE slots as visible
+// callouts and hide the rest — raw comment syntax is editor material.
+function prepForPreview(text: string): string {
+  return text
+    .replace(
+      /<!--\s*WRITE:\s*([\s\S]*?)\s*-->/g,
+      (_m, slot: string) => `> ✍️ **To write:** ${slot.replace(/\s+/g, " ")}`,
+    )
+    .replace(/<!--[\s\S]*?-->/g, "");
+}
 
 // Shared markdown renderer (GFM tables for the manuscript, dark prose).
 function Markdown({ text }: { text: string }) {
@@ -18,36 +30,9 @@ function Markdown({ text }: { text: string }) {
   );
 }
 
-// Marp deck preview: strip front-matter, split on `---`, one card + a pager.
-function SlideDeck({ markdown }: { markdown: string }) {
-  const slides = useMemo(() => {
-    const body = markdown.replace(/^---\n[\s\S]*?\n---\n?/, "");
-    return body.split(/\n---\n/).map((s) => s.trim()).filter(Boolean);
-  }, [markdown]);
-  const [i, setI] = useState(0);
-  const idx = Math.min(i, Math.max(0, slides.length - 1));
-  if (!slides.length) return <div className="text-zinc-500 text-sm p-4">No slides.</div>;
-  return (
-    <div className="flex flex-col h-full">
-      <div className="flex-1 min-h-0 overflow-auto rounded-md border border-zinc-800 bg-zinc-950 p-6 aspect-video">
-        <Markdown text={slides[idx]} />
-      </div>
-      <div className="flex items-center justify-center gap-3 pt-2 text-xs text-zinc-400">
-        <Button size="xs" variant="ghost" disabled={idx === 0} onClick={() => setI(idx - 1)}>
-          <ChevronLeft className="size-3" />
-        </Button>
-        <span>{idx + 1} / {slides.length}</span>
-        <Button size="xs" variant="ghost" disabled={idx >= slides.length - 1} onClick={() => setI(idx + 1)}>
-          <ChevronRight className="size-3" />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 export function Review() {
   const [files, setFiles] = useState<ReviewFile[]>([]);
-  const [tab, setTab] = useState<Tab>("slides");
+  const [tab, setTab] = useState<Tab>("paper");
   const [loaded, setLoaded] = useState<Record<string, string>>({}); // server content
   const [draft, setDraft] = useState<Record<string, string>>({}); // editor content
   const [generating, setGenerating] = useState(false);
@@ -113,7 +98,7 @@ export function Review() {
           {hasBundle ? "Regenerate bundle" : "Generate review bundle"}
         </Button>
         <div className="flex gap-1">
-          {(["slides", "paper", "figures"] as Tab[]).map((t) => (
+          {(["paper", "figures"] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -163,11 +148,7 @@ export function Review() {
             />
           </div>
           <div className="w-1/2 min-h-0 overflow-auto p-4">
-            {tab === "slides" ? (
-              <SlideDeck markdown={draft[name] ?? ""} />
-            ) : (
-              <Markdown text={draft[name] ?? ""} />
-            )}
+            <Markdown text={prepForPreview(draft[name] ?? "")} />
           </div>
         </div>
       )}
@@ -193,12 +174,12 @@ function FiguresTab({ files }: { files: ReviewFile[] }) {
           <img
             src={api.reviewFileUrl(n)}
             alt={n}
-            className="max-w-3xl rounded-md border border-zinc-800 bg-white p-2"
+            className="max-w-full h-auto rounded-md border border-zinc-800 bg-white p-2"
           />
         </div>
       ))}
-      <div className="flex gap-4 pt-2">
-        {["refs.bib", "prisma.mmd"].filter(has).map((n) => (
+      <div className="flex flex-wrap gap-4 pt-2">
+        {["slides.md", "refs.bib", "prisma.mmd"].filter(has).map((n) => (
           <a key={n} href={api.reviewFileUrl(n, { download: true })} download>
             <Button size="xs" variant="outline">
               <FileDown className="size-3" />
