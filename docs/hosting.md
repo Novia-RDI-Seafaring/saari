@@ -79,6 +79,12 @@ This guide is a checklist for a pilot, not hardened production ops.
 6. **Politeness/limits** - set `OPENALEX_MAILTO` (all users share one
    egress IP), and put a size quota or cleanup policy on /data.
 
+   Optionally set `SAARI_MAILTO_FROM_IDENTITY=1` to attribute each
+   user's OpenAlex traffic to *their* email (Easy Auth's
+   `x-ms-client-principal-name` UPN) instead of the shared address.
+   Opt-in on purpose: it forwards org users' email addresses to
+   OpenAlex, so clear it with whoever owns your privacy policy first.
+
 ## Local smoke test (no Azure needed)
 
 ```bash

@@ -118,3 +118,50 @@ def test_local_mode_untouched(tmp_path, monkeypatch):
     assert r.json()["root"] == str(root)
     listed = client.get("/api/projects").json()
     assert listed == {"hosted": False, "projects": ["local"], "active": "local"}
+
+
+def test_mailto_from_identity_opt_in(tmp_path, monkeypatch):
+    """With the flag on, the middleware binds the caller's email for OpenAlex
+    polite-pool attribution; with it off (default), it never does."""
+    from saari.hosting import RequestRootMiddleware
+    from saari.sources.openalex import DEFAULT_MAILTO, _resolve_mailto
+
+    monkeypatch.setenv("SAARI_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("SAARI_MAILTO_FROM_IDENTITY", "1")
+
+    seen: list[str] = []
+
+    async def inner(scope, receive, send):
+        seen.append(_resolve_mailto())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    client = TestClient(RequestRootMiddleware(inner))
+    client.get(
+        "/x",
+        headers={"x-saari-user": "alice", "x-ms-client-principal-name": "alice@novia.fi"},
+    )
+    assert seen == ["alice@novia.fi"]
+
+    # malformed principal name falls back to the operator default
+    client.get(
+        "/x",
+        headers={"x-saari-user": "alice", "x-ms-client-principal-name": "not-an-email"},
+    )
+    assert seen[-1] == DEFAULT_MAILTO
+
+    # flag off: identity email is ignored even when present
+    monkeypatch.delenv("SAARI_MAILTO_FROM_IDENTITY")
+    client.get(
+        "/x",
+        headers={"x-saari-user": "alice", "x-ms-client-principal-name": "alice@novia.fi"},
+    )
+    assert seen[-1] == DEFAULT_MAILTO
+
+
+def test_mailto_unbound_outside_requests():
+    from saari import hosting
+    from saari.sources.openalex import DEFAULT_MAILTO, _resolve_mailto
+
+    assert hosting.request_mailto() is None
+    assert _resolve_mailto() == DEFAULT_MAILTO
