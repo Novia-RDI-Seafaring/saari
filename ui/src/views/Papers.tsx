@@ -20,12 +20,16 @@ export function Papers() {
   )
     ? (statusParam as ScreenStatus)
     : "all";
+  const sortParam = searchParams.get("sort");
+  const initialSort: Sort = SORTS.includes(sortParam as Sort)
+    ? (sortParam as Sort)
+    : "cited";
 
   const [list, setList] = useState<PaperCard[]>([]);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<ScreenStatus | "all">(initialStatus);
   const [titleGrep, setTitleGrep] = useState("");
-  const [sort, setSort] = useState<Sort>("cited");
+  const [sort, setSort] = useState<Sort>(initialSort);
   const [paperId, setPaperId] = useState<string | null>(null);
   const [semantic, setSemantic] = useState("");
   const [searching, setSearching] = useState(false);
@@ -119,6 +123,11 @@ export function Papers() {
               key={p.id}
               paper={p}
               onSelect={(p) => setPaperId(p.id)}
+              onScreen={async (p, decision) => {
+                await api.screen(p.id, decision);
+                window.dispatchEvent(new Event("saari:changed"));
+                load();
+              }}
               selected={paperId === p.id}
             />
           ))}

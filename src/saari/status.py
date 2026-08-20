@@ -142,7 +142,7 @@ def build_stages(
                 "against the criteria. Done = zero candidates and zero maybes. "
                 "Reasons become the PRISMA exclusion box."
             ),
-            "view": "/papers?status=candidate",
+            "view": "/papers?status=candidate&sort=seen_in",
         },
         {
             "key": "snowball",
