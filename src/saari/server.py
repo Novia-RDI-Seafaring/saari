@@ -23,6 +23,9 @@ Routes:
     POST /api/project-corpus
     POST /api/refresh
     POST /api/query
+    GET  /api/triage                 (candidate queue; sort=auto|relevance|seen_in|cited)
+    GET  /api/guide                  (workflow map + next step)
+    POST /api/snowball-included      (snowball all included papers)
     GET  /api/agent/stream           (SSE — Pydantic AI chat)
 
 Static SPA mounted last at `/` with html=True so deep links work.
@@ -131,6 +134,15 @@ class FulltextFetchIn(BaseModel):
     status: str | None = "included"
     refresh: bool = False
     limit: int | None = None
+
+
+class SnowballIncludedIn(BaseModel):
+    top_n: int | None = None
+    sort: str = "auto"
+    direction: str = "both"
+    max_backward: int | None = None  # None = all references
+    max_forward: int | None = 25  # None = all citers up to the cap
+    skip_done: bool = True
 
 
 class SearchIn(BaseModel):
@@ -533,6 +545,74 @@ def create_app() -> FastAPI:
             "skipped_reason": r.skipped_reason,
             **r.completeness(),
         }
+
+    @app.post("/api/snowball-included")
+    def snowball_included(body: SnowballIncludedIn) -> dict[str, Any]:
+        from saari.snowball_batch import snowball_seeds
+
+        try:
+            return snowball_seeds(
+                top_n=body.top_n,
+                sort=body.sort,
+                direction=body.direction,
+                max_backward=body.max_backward,
+                max_forward=body.max_forward,
+                skip_done=body.skip_done,
+                project_root=paths.project_root(),
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/triage")
+    def triage(
+        limit: int = 20,
+        sort: str = "auto",
+        query: str | None = None,
+        min_citations: int | None = None,
+        year_from: int | None = None,
+        seen_in_at_least: int | None = None,
+    ) -> dict[str, Any]:
+        from saari.triage import rank_papers
+
+        root = paths.project_root()
+        try:
+            r = rank_papers(
+                status="candidate",
+                sort=sort,
+                query=query,
+                limit=limit,
+                min_citations=min_citations,
+                year_from=year_from,
+                seen_in_at_least=seen_in_at_least,
+                project_root=root,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        with db.connect(paths.db_path(root)) as con:
+            n_candidates = db.count_by_status(con).get("candidate", 0)
+        cards = []
+        for p in r.papers:
+            card = _to_card(p).model_dump()
+            if r.sort == "relevance":
+                card["score"] = r.scores.get(p.id)
+            cards.append(card)
+        out: dict[str, Any] = {
+            "n_candidates": n_candidates,
+            "n_matching": r.n_matching,
+            "shown": len(cards),
+            "sort": r.sort,
+            "basis": r.basis,
+            "papers": cards,
+        }
+        if r.note:
+            out["note"] = r.note
+        return out
+
+    @app.get("/api/guide")
+    def guide() -> dict[str, Any]:
+        from saari.guide import guide_data
+
+        return guide_data(project_root=paths.project_root())
 
     # ---------- searches ----------
 
