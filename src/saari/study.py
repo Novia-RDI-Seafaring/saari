@@ -11,11 +11,14 @@ is the same as "no study metadata yet".
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from saari import paths
+
+log = logging.getLogger(__name__)
 
 
 def study_path(project_root: Path | None = None) -> Path:
@@ -46,8 +49,10 @@ def get(project_root: Path | None = None) -> dict[str, Any]:
             stored = json.loads(p.read_text())
             if isinstance(stored, dict):
                 base.update(stored)
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, json.JSONDecodeError) as e:
+            # Keep serving defaults, but say so: silently dropping a
+            # hand-edited protocol is how a review loses its criteria.
+            log.warning("ignoring unreadable %s: %s", p, e)
     return base
 
 
@@ -82,6 +87,7 @@ def update(
     cur["updated_at"] = _now()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cur, indent=2) + "\n")
+    log.debug("updated %s", p)
     return cur
 
 

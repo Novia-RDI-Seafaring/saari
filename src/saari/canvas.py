@@ -8,6 +8,7 @@ artifact. No heavy deps in this module — just the stdlib + the DB.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Any
 
 from saari import db, paths
 from saari.models import Paper
+
+log = logging.getLogger(__name__)
 
 # Obsidian JSON Canvas color slots (1-6). Custom hex also allowed.
 _STATUS_COLOR = {
@@ -109,6 +112,7 @@ def write_obsidian_canvas(
     """Write an Obsidian JSON Canvas from the current projection."""
     points = _load_points(status, project_root)
     if not points:
+        log.info("canvas: no projected papers, not writing %s", out)
         return {"n_nodes": 0, "path": str(out), "note": "No projected papers. Run `saari project` first."}
 
     canvas_w, canvas_h = 4800, 3400
@@ -165,6 +169,7 @@ def write_obsidian_canvas(
     canvas = {"nodes": nodes, "edges": []}
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(canvas, indent=2, ensure_ascii=False))
+    log.info("wrote obsidian canvas %s (%d nodes)", out, len(nodes))
     return {
         "n_nodes": len(nodes),
         "path": str(out),
@@ -186,6 +191,7 @@ def write_html_viewer(
     """
     points = _load_points(status, project_root)
     if not points:
+        log.info("canvas: no projected papers, not writing %s", out)
         return {"n_nodes": 0, "path": str(out), "note": "No projected papers. Run `saari project` first."}
 
     # Build per-point data for embedding as JSON in the HTML
@@ -211,7 +217,10 @@ def write_html_viewer(
             }
         )
 
-    payload = json.dumps(data, ensure_ascii=False)
+    # Titles and abstracts come from external APIs. Inside an inline <script>,
+    # a literal "</script>" in a title would end the block and let the rest
+    # run as markup. "<\/" is the same string to JS but not to the HTML parser.
+    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     palette = json.dumps(_STATUS_HEX)
 
     template = _HTML_TEMPLATE.replace("__PAYLOAD__", payload).replace(
@@ -219,6 +228,7 @@ def write_html_viewer(
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(template)
+    log.info("wrote html viewer %s (%d points)", out, len(data))
     return {
         "n_nodes": len(data),
         "path": str(out),
@@ -357,12 +367,13 @@ function select(d) {
   if (d.cited != null) meta.push('cited=' + d.cited);
   if (d.venue) meta.push(d.venue);
   if (d.oa) meta.push('oa=' + d.oa);
-  const idLink = d.url ? `<a href="${d.url}" target="_blank">open →</a>` : '';
+  const safeUrl = /^https?:\/\//i.test(d.url || '') ? escapeHtml(d.url) : '';
+  const idLink = safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener">open →</a>` : '';
   detail.style.display = 'block';
   detail.innerHTML = `<h2>${escapeHtml(d.title)}</h2>
     <div class="meta2">${meta.join(' · ')} · status=${d.status}${d.seen_in > 1 ? ' · seen_in=' + d.seen_in : ''}</div>
     <div class="excerpt">${escapeHtml(d.abstract_excerpt || '(no abstract)')}</div>
-    <div style="margin-top:8px;"><code style="font-size:10px;">${d.id}</code> ${idLink}</div>`;
+    <div style="margin-top:8px;"><code style="font-size:10px;">${escapeHtml(d.id)}</code> ${idLink}</div>`;
 }
 
 function escapeHtml(s) {

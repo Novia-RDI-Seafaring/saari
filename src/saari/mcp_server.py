@@ -705,6 +705,11 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=3045)
     args = parser.parse_args()
 
+    from saari import log
+
+    # stderr/file only: in stdio mode stdout carries the JSON-RPC stream.
+    log.setup(propagate=False)
+
     if not args.http:
         mcp.run()
         return
