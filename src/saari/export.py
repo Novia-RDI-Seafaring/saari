@@ -207,7 +207,12 @@ def export_paper(out: Path, project_root: Path | None = None) -> ExportResult:
             con, limit=1_000_000, status="included",
             order_by="year ASC NULLS LAST, first_seen_at ASC",
         )
-    md = report.build_paper_md(study.get(root), prisma, funnel["searches"], themes, included)
+    from saari.fulltext import coverage
+
+    md = report.build_paper_md(
+        study.get(root), prisma, funnel["searches"], themes, included,
+        fulltext=coverage(root),
+    )
     _figures(root, out_dir)
     export_bibtex(out_dir / "refs.bib", status_filter="included", project_root=root)
     out.write_text(md)

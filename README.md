@@ -72,6 +72,26 @@ saari export slr                   # PRISMA + manuscript scaffold + slides
 `saari --help` lists everything. For the web UI, install the serve extra
 (`uv tool install 'saari[serve]'`) and run `saari serve`.
 
+## Full text (optional)
+
+Screening starts from titles and abstracts. For included papers you can
+fetch open-access full text (OA locations, PubMed Central, arXiv; never
+paywalled copies). It needs the `fulltext` extra (pypdf):
+
+```bash
+uv tool install 'saari[fulltext]'
+saari fulltext fetch                   # all included papers; summary of got/missing
+saari papers text openalex:W123 -n 4000 --offset 0
+saari papers text openalex:W123 --grep "ballast water"
+```
+
+PDFs and extracted text are cached in `.saaristo/fulltext/`. Each paper gets
+an honest status (available / unavailable / failed, with a reason), and the
+exported Limitations section states how many included papers had full text
+retrieved. MCP: `paper_text`, `fulltext_fetch`. For the MCP server use
+`uvx --from 'saari[fulltext]' saari-mcp`. Scanned PDFs (no text layer) are
+reported as failed; there is no OCR.
+
 ## What the export gives you
 
 `saari export slr` writes `papers/review/`:
@@ -90,7 +110,7 @@ trace to the corpus, and always writes an honest Limitations section.
 
 ```
 my-paper/
-├── .saaristo/       tool-owned state (SQLite DB, raw API responses)
+├── .saaristo/       tool-owned state (SQLite DB, raw API responses, fulltext/)
 └── papers/          user-visible outputs (landscape.html, refs.bib, review/)
 ```
 

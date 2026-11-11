@@ -725,6 +725,83 @@ def papers_raw(
     console.print(full.read_text())
 
 
+@papers_app.command("text")
+def papers_text(
+    paper_id: Annotated[str, typer.Argument(help="Paper id, DOI, arxiv ID, or PMID")],
+    offset: Annotated[int, typer.Option("--offset", help="Start character")] = 0,
+    max_chars: Annotated[int, typer.Option("--max-chars", "-n", help="Slice length (cap 50000)")] = 4000,
+    grep: Annotated[str | None, typer.Option("--grep", "-g", help="Case-insensitive regex; show hits")] = None,
+    fetch: Annotated[bool, typer.Option("--fetch/--no-fetch", help="Download if not cached")] = True,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Re-try / re-download")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the full JSON response")] = False,
+) -> None:
+    """Read a paper's open-access full text (fetched once, cached in .saaristo/fulltext/)."""
+    from saari import fulltext as _ft
+
+    root = _resolve_root()
+    try:
+        r = _ft.read_text(
+            paper_id, offset=offset, max_chars=max_chars, grep=grep,
+            fetch_if_missing=fetch, refresh=refresh, project_root=root,
+        )
+    except KeyError:
+        console.print(f"[red]Not found:[/] {paper_id}")
+        raise typer.Exit(1) from None
+    except _ft.FulltextDependencyError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    if as_json:
+        console.print_json(data=r)
+        return
+    if r.get("status") != _ft.STATUS_AVAILABLE:
+        console.print(f"[yellow]{r.get('status') or 'not fetched'}:[/] {r.get('reason')}")
+        for a in r.get("attempts") or []:
+            console.print(f"  [dim]{a['kind']}  {a['url']}  {a.get('error', 'ok')}[/]")
+        raise typer.Exit(1)
+    console.print(
+        f"[dim]{r['n_chars']} chars, {r['n_pages']} pages, quality={r['quality']}, "
+        f"source={r['source_url']}[/]"
+    )
+    if grep:
+        console.print(f"[dim]{r['n_hits']} hit(s) for {grep!r}[/]")
+        for h in r["hits"]:
+            console.print(f"p{h['page']} @{h['offset']}  {h['snippet']}", markup=False, highlight=False)
+        return
+    console.print(r["text"], markup=False, highlight=False)
+    if r["next_offset"] is not None:
+        console.print(f"[dim]... more: --offset {r['next_offset']}[/]")
+
+
+fulltext_app = typer.Typer(help="Open-access full text for screened papers", no_args_is_help=True)
+app.add_typer(fulltext_app, name="fulltext")
+
+
+@fulltext_app.command("fetch")
+def fulltext_fetch_cmd(
+    status: Annotated[str, typer.Option("--status", help="Screening status, or 'all'")] = "included",
+    refresh: Annotated[bool, typer.Option("--refresh", help="Retry papers already recorded")] = False,
+    limit: Annotated[int | None, typer.Option("--limit", "-n")] = None,
+) -> None:
+    """Fetch OA full text for every paper with a status (default: included)."""
+    from saari import fulltext as _ft
+
+    root = _resolve_root()
+    try:
+        r = _ft.fetch_many(
+            status=None if status == "all" else db.normalize_status(status),
+            refresh=refresh, limit=limit, project_root=root,
+        )
+    except _ft.FulltextDependencyError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    console.print(
+        f"[green]{r['n_available']}[/] of {r['n_papers']} {status} papers have full text  "
+        f"unavailable={r['n_unavailable']}  failed={r['n_failed']}  from_cache={r['n_from_cache']}"
+    )
+    for m in r["missing"]:
+        console.print(f"  [yellow]{m['status']}[/] {m['paper_id']}  [dim]{m['reason']}[/]")
+
+
 export_app = typer.Typer(help="Compile the corpus into manuscript-ready formats", no_args_is_help=True)
 app.add_typer(export_app, name="export")
 
