@@ -125,7 +125,13 @@ git clone https://github.com/Novia-RDI-Seafaring/saari
 cd saari
 uv sync --all-extras
 uv run pytest -q
+uv run ruff check .
 ```
+
+Logs go to stderr (never stdout, which `saari-mcp` uses for JSON-RPC).
+`saari -v <command>` shows INFO, `-vv` DEBUG. For the MCP server and other
+non-CLI runs, set `SAARI_LOG_LEVEL=INFO` (or `DEBUG`); `SAARI_LOG_FILE=path`
+also writes to a file.
 
 The web UI is a React SPA in `ui/` (pnpm + Vite): `cd ui && pnpm install &&
 pnpm dev` proxies `/api` to a running `saari serve`.

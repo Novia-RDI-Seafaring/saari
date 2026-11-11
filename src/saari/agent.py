@@ -16,7 +16,9 @@ explaining how to enable it. The chat panel still works as a UI surface.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -29,6 +31,8 @@ from saari.embed import (
 from saari.export import export_bibtex as _export_bibtex
 from saari.projection import project_corpus as _project_corpus
 from saari.snowball import snowball as _snowball
+
+log = logging.getLogger(__name__)
 
 
 def _has_api_key() -> bool:
@@ -305,6 +309,7 @@ def _build_agent():  # type: ignore[no-untyped-def]
 async def stream_chat(prompt: str) -> AsyncIterator[dict[str, str]]:
     """Yield SSE events: {event, data} dicts."""
     if not _has_api_key():
+        log.info("chat: no API key set, agent offline")
         yield {
             "event": "message",
             "data": json.dumps({
@@ -322,13 +327,18 @@ async def stream_chat(prompt: str) -> AsyncIterator[dict[str, str]]:
     try:
         agent = _build_agent()
     except Exception as e:
+        log.exception("chat: failed to build agent")
         yield {"event": "error", "data": json.dumps({"error": str(e)})}
         return
 
+    t0 = time.perf_counter()
+    log.info("chat: run started (model=%s)", os.environ.get("SAARI_AGENT_MODEL", "openai:gpt-4o-mini"))
     try:
         async with agent.run_stream(prompt) as run:
             async for chunk in run.stream_text(delta=True):
                 yield {"event": "delta", "data": json.dumps({"delta": chunk})}
+        log.info("chat: run finished in %.2fs", time.perf_counter() - t0)
         yield {"event": "done", "data": "{}"}
     except Exception as e:
+        log.exception("chat: run failed after %.2fs", time.perf_counter() - t0)
         yield {"event": "error", "data": json.dumps({"error": str(e)})}

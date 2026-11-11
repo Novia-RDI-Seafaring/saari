@@ -37,6 +37,22 @@ app.add_typer(searches_app, name="searches")
 console = Console()
 
 
+@app.callback()
+def _main(
+    verbose: Annotated[
+        int,
+        typer.Option(
+            "--verbose", "-v", count=True,
+            help="Log to stderr: -v for INFO, -vv for DEBUG (default: SAARI_LOG_LEVEL or WARNING).",
+        ),
+    ] = 0,
+) -> None:
+    """Global options, applied before any subcommand."""
+    from saari import log
+
+    log.setup(log.verbosity_to_level(verbose))
+
+
 class OutputFormat(str, Enum):
     table = "table"
     cards = "cards"
@@ -80,7 +96,7 @@ def serve(
     """Boot the saari HTTP server (REST API + SPA) on PORT.
 
     Serves the built UI at the root if `ui/dist/` exists, otherwise just the
-    API. For UI development run `cd ui && npm run dev` in a second terminal —
+    API. For UI development run `cd ui && pnpm dev` in a second terminal —
     Vite proxies `/api` to this server.
     """
     import threading

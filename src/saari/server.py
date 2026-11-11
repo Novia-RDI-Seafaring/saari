@@ -179,7 +179,9 @@ class ProjectCreate(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="saari", version="0.0.1")
+    from saari import __version__
+
+    app = FastAPI(title="saari", version=__version__)
 
     # Vite dev server proxy still works without CORS, but allow it for direct dev.
     app.add_middleware(

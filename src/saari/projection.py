@@ -8,12 +8,16 @@ re-running `project_corpus()` replaces all rows.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from saari import db, paths
+
+log = logging.getLogger(__name__)
 
 
 def _load_embeddings(con) -> tuple[list[str], np.ndarray]:
@@ -37,19 +41,31 @@ class ProjectionResult:
     note: str | None = None
 
 
+# Below this, umap-learn's spectral initialisation fails outright
+# (zero-size reduction at n=2, eigsh k >= N at n=3).
+UMAP_MIN_POINTS = 4
+
+
+def _effective_neighbors(n_neighbors: int, n: int) -> int:
+    """UMAP needs 2 <= n_neighbors < n_samples; clamp for tiny corpora."""
+    return min(n_neighbors, max(2, n - 1))
+
+
 def _umap_project(
     vecs: np.ndarray, n_neighbors: int, min_dist: float, random_state: int
 ) -> np.ndarray:
     import umap  # heavy import; delay until needed
 
-    n = len(vecs)
-    nn = min(n_neighbors, max(2, n - 1))
+    nn = _effective_neighbors(n_neighbors, len(vecs))
     reducer = umap.UMAP(
         n_neighbors=nn,
         min_dist=min_dist,
         n_components=2,
         metric="cosine",
         random_state=random_state,
+        # A fixed seed forces single-threaded UMAP anyway; saying so up front
+        # avoids a UserWarning on every run.
+        n_jobs=1,
     )
     return reducer.fit_transform(vecs)
 
@@ -72,21 +88,32 @@ def project_corpus(
     method: 'umap' (default) | 'pca'. PCA is numpy-only (fallback for low-dep setups).
     """
     root = project_root or paths.project_root()
+    t0 = time.perf_counter()
     with db.connect(paths.db_path(root)) as con:
         ids, vecs = _load_embeddings(con)
         n = len(ids)
         if n < 2:
+            log.info("project: skipped, only %d embedding(s)", n)
             return ProjectionResult(
                 n_points=n, method=method, params={},
                 note="Not enough embeddings (need 2+). Run `saari embed` first.",
             )
 
         params: dict
-        if method == "umap":
+        if method == "umap" and n < UMAP_MIN_POINTS:
+            # UMAP's spectral init raises on 2-3 points; skip the attempt.
+            log.info("project: %d points is below UMAP's minimum, using PCA", n)
+            coords = _pca_project(vecs)
+            method = "pca"
+            params = {"fallback_reason": f"UMAP needs {UMAP_MIN_POINTS}+ points, got {n}"}
+        elif method == "umap":
             try:
                 coords = _umap_project(vecs, n_neighbors, min_dist, random_state)
-                params = {"n_neighbors": min(n_neighbors, n - 1), "min_dist": min_dist, "metric": "cosine"}
-            except Exception as e:  # pragma: no cover — fallback path
+                if not np.isfinite(coords).all():
+                    raise ValueError("UMAP returned non-finite coordinates")
+                params = {"n_neighbors": _effective_neighbors(n_neighbors, n), "min_dist": min_dist, "metric": "cosine"}
+            except Exception as e:
+                log.warning("UMAP failed on %d points, falling back to PCA: %s", n, e)
                 coords = _pca_project(vecs)
                 method = "pca"
                 params = {"fallback_reason": str(e)}
@@ -107,6 +134,7 @@ def project_corpus(
             ],
         )
 
+    log.info("projected %d points with %s in %.2fs", n, method, time.perf_counter() - t0)
     return ProjectionResult(
         n_points=n,
         method=method,
