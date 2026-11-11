@@ -129,6 +129,9 @@ def search(
     year_from: int | None = None,
     year_to: int | None = None,
     source: str = "openalex",
+    scope: str = "all",
+    fetch_all: bool = False,
+    max_records: int | None = None,
 ) -> dict[str, Any]:
     """Search a bibliographic source and persist results into the project.
 
@@ -136,6 +139,16 @@ def search(
     SCOPUS_API_KEY, and SCOPUS_INST_TOKEN off a registered institutional
     network; Scopus records may lack abstracts). Results are deduplicated
     across sources by DOI.
+
+    Completeness: the result has `n_available` (the source's total for the
+    query) and `truncated` (True when only a sample was kept). A systematic
+    review must screen everything a query returns: when `truncated` is
+    True, either rerun with `fetch_all=True` or narrow the query.
+    - `limit`: records to fetch (pages past 100 automatically).
+    - `fetch_all`: fetch every match; refuses with an error above the
+      safety cap `max_records` (default SAARI_SEARCH_MAX_RECORDS or 2000).
+    - `scope`: "all" (OpenAlex: title, abstract, full text, keywords) or
+      "title_abstract" (title + abstract only; less noisy).
 
     Returns a summary (`search_id`, counts, `paper_ids`). Use `papers_list`
     or `paper_show` to read the actual paper data.
@@ -149,6 +162,9 @@ def search(
         year_from=year_from,
         year_to=year_to,
         project_root=paths.project_root(),
+        scope=scope,
+        fetch_all=fetch_all,
+        max_records=max_records,
     )
 
 
@@ -326,15 +342,25 @@ def searches_list(limit: int = 20) -> dict[str, Any]:
 def snowball(
     paper_id: str,
     direction: str = "both",
-    max_per_direction: int = 25,
+    max_per_direction: int | None = None,
+    max_backward: int | None = None,
+    max_forward: int | None = 25,
+    max_records: int | None = None,
 ) -> dict[str, Any]:
     """Expand a seed paper's citation neighbors into the project DB.
 
-    - `backward`: papers the seed cites (from OpenAlex `referenced_works`)
-    - `forward`:  papers that cite the seed (via OpenAlex `cites:` filter)
-    - `both`:     both, up to `max_per_direction` each
+    - `backward`: papers the seed cites (from OpenAlex `referenced_works`).
+      All references by default (`max_backward=None`).
+    - `forward`:  papers that cite the seed (via OpenAlex `cites:` filter).
+      25 by default; `max_forward=None` fetches all up to `max_records`.
+    - `both`:     both.
+    - `max_per_direction`: legacy; when set, overrides both limits.
 
-    Often the single highest-leverage move after finding one good seed —
+    The result reports per-direction completeness (`backward` / `forward`:
+    `n_available`, `n_retrieved`, `truncated`), plus overall `n_available`
+    and `truncated`.
+
+    Often the single highest-leverage move after finding one good seed -
     e.g. a survey paper gets you its whole bibliography in one call.
     """
     root = paths.project_root()
@@ -343,6 +369,9 @@ def snowball(
         direction=direction,
         max_per_direction=max_per_direction,
         project_root=root,
+        max_backward=max_backward,
+        max_forward=max_forward,
+        max_records=max_records,
     )
     return {
         "seed": r.seed_paper_id,
@@ -352,6 +381,7 @@ def snowball(
         "backward_paper_ids": r.backward_paper_ids,
         "forward_paper_ids": r.forward_paper_ids,
         "skipped_reason": r.skipped_reason,
+        **r.completeness(),
     }
 
 

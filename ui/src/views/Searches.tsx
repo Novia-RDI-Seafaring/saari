@@ -49,8 +49,10 @@ export function Searches() {
         year_to: yearTo ? Number(yearTo) : undefined,
         source,
       });
+      const of = r.n_available == null ? "" : ` of ${r.n_available} available`;
+      const sample = r.truncated ? " (sample, not the full result set)" : "";
       setMsg(
-        `fetched ${r.n_fetched} (new ${r.n_new}, dup ${r.n_duplicate}) — search #${r.search_id}`,
+        `retrieved ${r.n_fetched}${of}${sample} (new ${r.n_new}, dup ${r.n_duplicate}) — search #${r.search_id}`,
       );
       await refresh();
     } catch (e) {
@@ -129,7 +131,11 @@ export function Searches() {
               <div className="text-[10px] text-zinc-500 mt-0.5 flex items-center gap-2">
                 <span>#{s.id}</span>
                 <span>{s.source}</span>
-                <span>{s.n_returned ?? 0} results</span>
+                <span>
+                  {s.n_returned ?? 0}
+                  {s.n_available != null ? ` of ${s.n_available}` : ""} results
+                </span>
+                {s.truncated ? <span className="text-amber-400">truncated</span> : null}
                 <span className="ml-auto truncate">{s.created_at?.slice(0, 16)}</span>
               </div>
             </button>

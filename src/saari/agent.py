@@ -101,10 +101,14 @@ def _build_agent():  # type: ignore[no-untyped-def]
         year_from: int | None = None,
         year_to: int | None = None,
         source: str = "openalex",
+        scope: str = "all",
+        fetch_all: bool = False,
     ) -> dict[str, Any]:
         """Search a bibliographic source ("openalex" or "scopus") and persist results.
 
-        Returns search_id + counts. Scopus needs SCOPUS_API_KEY configured.
+        Returns search_id + counts, `n_available` (source total) and
+        `truncated`. If truncated, rerun with fetch_all=True or narrow the
+        query. scope: "all" or "title_abstract". Scopus needs SCOPUS_API_KEY.
         """
         from saari.sources import run_search
 
@@ -115,6 +119,8 @@ def _build_agent():  # type: ignore[no-untyped-def]
             year_from=year_from,
             year_to=year_to,
             project_root=paths.project_root(),
+            scope=scope,
+            fetch_all=fetch_all,
         )
 
     @agent.tool_plain
@@ -221,14 +227,23 @@ def _build_agent():  # type: ignore[no-untyped-def]
 
     @agent.tool_plain
     def snowball_paper(
-        paper_id: str, direction: str = "both", max_per_direction: int = 25,
+        paper_id: str, direction: str = "both",
+        max_backward: int | None = None, max_forward: int | None = 25,
     ) -> dict[str, Any]:
-        """Expand a seed paper's citation neighbors (backward / forward / both)."""
-        r = _snowball(paper_id, direction=direction, max_per_direction=max_per_direction)
+        """Expand a seed paper's citation neighbors (backward / forward / both).
+
+        Backward takes all references by default; forward 25 (None = all).
+        Reports per-direction n_available / truncated.
+        """
+        r = _snowball(
+            paper_id, direction=direction,
+            max_backward=max_backward, max_forward=max_forward,
+        )
         return {
             "seed": r.seed_paper_id, "direction": r.direction,
             "n_fetched": r.n_fetched, "n_new": r.n_new,
             "skipped_reason": r.skipped_reason,
+            **r.completeness(),
         }
 
     # ---------- semantic search ----------

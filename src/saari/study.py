@@ -103,7 +103,8 @@ def funnel(project_root: Path | None = None) -> dict[str, Any]:
     root = project_root or paths.project_root()
     with db.connect(paths.db_path(root)) as con:
         sr = con.execute(
-            "SELECT id, source, query, n_returned, created_at FROM search ORDER BY created_at ASC"
+            "SELECT id, source, query, n_returned, n_available, truncated, created_at "
+            "FROM search ORDER BY created_at ASC"
         ).fetchall()
         searches = [dict(r) for r in sr]
         n_fetched = sum(int(r["n_returned"] or 0) for r in sr)

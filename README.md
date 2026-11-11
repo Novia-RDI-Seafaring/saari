@@ -72,6 +72,40 @@ saari export slr                   # PRISMA + manuscript scaffold + slides
 `saari --help` lists everything. For the web UI, install the serve extra
 (`uv tool install 'saari[serve]'`) and run `saari serve`.
 
+## Search completeness
+
+A systematic review has to screen everything a query returns, so saari
+never keeps a silent sample. Every search reports `n_available` (the
+source's total) next to what it retrieved, and flags `truncated` when it
+kept only part:
+
+```bash
+saari search "digital twin ship" --limit 25          # "Retrieved 25 of 850 available"
+saari search "digital twin ship" --all               # fetch every record
+saari search "digital twin ship" --scope title_abstract   # skip full-text matches
+saari snowball openalex:W123 --all-forward           # all citers, not just 25
+```
+
+- `--limit` pages past OpenAlex's 100-per-page maximum automatically.
+- `--all` fetches every match up to a safety cap (2000 records; set
+  `--max-records` or `SAARI_SEARCH_MAX_RECORDS`). Above the cap the search
+  is refused, so you narrow the query instead of screening a sample.
+- `--scope title_abstract` matches title and abstract only. The default
+  OpenAlex search also matches full text and keywords, which is noisy.
+- Snowball takes **all** references backward by default, and the 25 most
+  relevant citing works forward (`--max-forward N`, or `--all-forward`).
+  Both directions report how many exist.
+- OpenAlex works without a key, but keyless use shares a small per-IP daily
+  budget and basic paging stops at 10,000 records. Set `OPENALEX_API_KEY`
+  (free at openalex.org/settings/api) for a larger budget and cursor paging.
+  `OPENALEX_MAILTO` is optional; OpenAlex now ignores it.
+- Transient OpenAlex failures (429, 5xx, timeouts) are retried with
+  backoff, honoring `Retry-After`.
+
+The PRISMA diagram, search log table, and Limitations block in the export
+state how many records were retrieved of how many were available, list
+every truncated search, and say when older searches lack a recorded total.
+
 ## What the export gives you
 
 `saari export slr` writes `papers/review/`:

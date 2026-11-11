@@ -71,6 +71,10 @@ export interface SearchRow {
   query: string;
   params_json: string;
   n_returned: number | null;
+  // Source total for the query; null for searches recorded before saari
+  // tracked it.
+  n_available?: number | null;
+  truncated?: number | null;
   created_at: string;
 }
 
@@ -183,10 +187,17 @@ export const api = {
     ),
   screenBatch: (paper_ids: string[], decision: ScreenStatus, note?: string) =>
     post<{ n: number; status: string }>("/api/screen-batch", { paper_ids, decision, note }),
+  // Backward takes all references; `max` bounds forward (citing) works.
   snowball: (id: string, direction: "backward" | "forward" | "both" = "both", max = 25) =>
-    post<{ seed: string; n_fetched: number; n_new: number }>(
+    post<{
+      seed: string;
+      n_fetched: number;
+      n_new: number;
+      n_available: number | null;
+      truncated: boolean | null;
+    }>(
       `/api/papers/${encodeURIComponent(id)}/snowball`,
-      { direction, max_per_direction: max },
+      { direction, max_forward: max },
     ),
 
   searches: () => get<{ searches: SearchRow[] }>("/api/searches"),
@@ -198,6 +209,8 @@ export const api = {
       n_fetched: number;
       n_new: number;
       n_duplicate: number;
+      n_available: number | null;
+      truncated: boolean | null;
       paper_ids: string[];
     }>("/api/searches", body),
 

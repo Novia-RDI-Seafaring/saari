@@ -55,6 +55,61 @@ def _slot(label: str) -> str:
 # PRISMA flow
 # --------------------------------------------------------------------------- #
 
+def search_completeness(searches: list[dict[str, Any]]) -> dict[str, Any]:
+    """Retrieved-vs-available accounting over search / snowball events.
+
+    Pure. Each event may carry `n_available` (source total) and `truncated`;
+    events recorded before saari tracked these have neither and are counted
+    as `n_unknown` (their totals are unknown, never assumed complete).
+    """
+    truncated: list[dict[str, Any]] = []
+    n_known = n_unknown = 0
+    n_retrieved_known = n_available_known = 0
+    for s in searches:
+        avail = s.get("n_available")
+        got = int(s.get("n_returned") or 0)
+        if avail is None:
+            n_unknown += 1
+            continue
+        n_known += 1
+        n_retrieved_known += got
+        n_available_known += int(avail)
+        is_trunc = s.get("truncated")
+        if is_trunc is None:
+            is_trunc = got < int(avail)
+        if is_trunc:
+            truncated.append({
+                "source": s.get("source") or "unknown",
+                "query": s.get("query") or "",
+                "n_retrieved": got,
+                "n_available": int(avail),
+            })
+    return {
+        "n_events": len(searches),
+        "n_known": n_known,
+        "n_unknown": n_unknown,
+        "n_truncated": len(truncated),
+        "n_retrieved_known": n_retrieved_known,
+        "n_available_known": n_available_known,
+        "truncated": truncated,
+    }
+
+
+def completeness_line(c: dict[str, Any]) -> str | None:
+    """One-line PRISMA annotation, or None when retrieval was complete and
+    fully recorded (nothing to disclose)."""
+    if not c or (not c.get("n_truncated") and not c.get("n_unknown")):
+        return None
+    parts: list[str] = []
+    if c.get("n_known"):
+        parts.append(f"retrieved {c['n_retrieved_known']} of {c['n_available_known']} available")
+    if c.get("n_truncated"):
+        parts.append(f"{c['n_truncated']} search(es) truncated")
+    if c.get("n_unknown"):
+        parts.append(f"{c['n_unknown']} with total not recorded")
+    return "; ".join(parts)
+
+
 def build_prisma(funnel: dict[str, Any], excluded: list[Paper]) -> dict[str, Any]:
     """Assemble a PRISMA 2020 flow structure from a funnel dict + excluded papers.
 
@@ -100,6 +155,10 @@ def build_prisma(funnel: dict[str, Any], excluded: list[Paper]) -> dict[str, Any
             "n_snowball": n_snowball,
             "n_other": n_other,
             "n_total": n_total,
+            # Records the sources reported vs what was retrieved; see
+            # search_completeness(). Non-empty `truncated` means the funnel
+            # starts from a sample.
+            "completeness": search_completeness(searches),
         },
         "n_duplicates_removed": n_duplicates_removed,
         "n_unique": n_unique,
@@ -135,6 +194,8 @@ def render_prisma_mermaid(data: dict[str, Any]) -> str:
     if idn.get("n_other"):
         src_line += f" · other: {idn['n_other']}"
     ident = f"Records identified (n={idn['n_total']})<br/>{src_line}"
+    if cl := completeness_line(idn.get("completeness") or {}):
+        ident += f"<br/>{cl}"
     dedup = f"Records after duplicates removed (n={data['n_unique']})<br/>duplicates removed: {data['n_duplicates_removed']}"
     screened = f"Records screened (n={data['n_screened']})"
     if data["n_unscreened"]:
@@ -181,14 +242,18 @@ def render_prisma_svg(data: dict[str, Any]) -> str:
     # The side box is 250px wide with centered, non-wrapping text.
     reason_lines = [ln if len(ln) <= 36 else ln[:33] + "..." for ln in reason_lines]
 
+    ident_lines = [
+        f"Records identified (n={idn['n_total']})",
+        f"database: {idn['n_database']}  ·  snowballing: {idn['n_snowball']}"
+        + (f"  ·  other: {idn['n_other']}" if idn.get("n_other") else ""),
+    ]
+    if cl := completeness_line(idn.get("completeness") or {}):
+        ident_lines.append(cl)
+
     W, H = 840, 620
     bx, bw = 210, 300  # main column x, width
     boxes = [
-        _svg_box(bx, 20, bw, 70, [
-            f"Records identified (n={idn['n_total']})",
-            f"database: {idn['n_database']}  ·  snowballing: {idn['n_snowball']}"
-            + (f"  ·  other: {idn['n_other']}" if idn.get("n_other") else ""),
-        ]),
+        _svg_box(bx, 20, bw, 70, ident_lines),
         _svg_box(bx, 160, bw, 70, [
             f"Records after de-duplication (n={data['n_unique']})",
             f"duplicates removed: {data['n_duplicates_removed']}",
@@ -402,12 +467,26 @@ def characteristics_table(papers: list[Paper]) -> str:
 
 
 def search_strategy_table(searches: list[dict[str, Any]]) -> str:
-    header = "| # | Source | Query | Date | Records |\n|---|---|---|---|---|\n"
+    """Search log. `Available` is the source's total for the query; "not
+    recorded" for events logged before saari tracked it."""
+    header = (
+        "| # | Source | Query | Date | Records | Available |\n"
+        "|---|---|---|---|---|---|\n"
+    )
     rows = []
     for i, s in enumerate(searches, 1):
         date = (s.get("created_at") or "")[:10]
+        avail = s.get("n_available")
+        if avail is None:
+            avail_cell = "not recorded"
+        else:
+            avail_cell = str(avail)
+            got = s.get("n_returned")
+            if s.get("truncated") or (s.get("truncated") is None and got is not None and int(got) < int(avail)):
+                avail_cell += " (truncated)"
         rows.append(
-            f"| {i} | {s.get('source', '—')} | `{s.get('query', '')}` | {date} | {s.get('n_returned', '—')} |"
+            f"| {i} | {s.get('source', '—')} | `{s.get('query', '')}` | {date} "
+            f"| {s.get('n_returned', '—')} | {avail_cell} |"
         )
     return header + "\n".join(rows) + "\n"
 
@@ -423,11 +502,51 @@ def reference_list(papers: list[Paper]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def limitations_block(by_source: dict[str, int] | None = None) -> str:
+def completeness_bullets(c: dict[str, Any] | None, max_listed: int = 8) -> str:
+    """Limitations bullets on retrieval completeness. Empty when no search
+    events are known (nothing to claim either way)."""
+    if not c or not c.get("n_events"):
+        return ""
+    out = ""
+    if c.get("n_truncated"):
+        listed = c["truncated"][:max_listed]
+        lines = "".join(
+            f"  - {t['source']} `{t['query']}`: retrieved {t['n_retrieved']} of "
+            f"{t['n_available']} available\n"
+            for t in listed
+        )
+        more = len(c["truncated"]) - len(listed)
+        if more > 0:
+            lines += f"  - ... and {more} more (see the search log)\n"
+        out += (
+            f"- **Truncated retrieval.** {c['n_truncated']} of {c['n_events']} search / "
+            "snowball event(s) kept only part of what the source returned, so screening "
+            "covered a sample of those result sets, not all of them:\n" + lines
+        )
+    if c.get("n_unknown"):
+        out += (
+            f"- **Completeness not recorded.** {c['n_unknown']} search / snowball event(s) "
+            "were logged without the source's total record count. Those may be samples "
+            "of a larger result set.\n"
+        )
+    if not out:
+        out = (
+            "- **Complete retrieval.** Every recorded search and snowball event retrieved "
+            "all records the source reported for it.\n"
+        )
+    return out
+
+
+def limitations_block(
+    by_source: dict[str, int] | None = None,
+    completeness: dict[str, Any] | None = None,
+) -> str:
     """Auto-disclosed method limitations so the draft cannot overclaim.
 
     `by_source` (record counts per search source) makes the sources bullet
     factual: single-source wording only when a single database was used.
+    `completeness` (from `search_completeness`) discloses truncated
+    searches / snowballs and events whose source totals were not recorded.
     """
     databases = sorted(k for k in (by_source or {}) if k not in ("snowball", "unknown"))
     if len(databases) > 1:
@@ -447,6 +566,7 @@ def limitations_block(by_source: dict[str, int] | None = None) -> str:
         "This review was produced with saari and carries the following method limitations, "
         "which readers should weigh:\n\n"
         + src_bullet
+        + completeness_bullets(completeness)
         + "- **Single-reviewer screening.** Inclusion/exclusion decisions were made by a single "
         "reviewer (human or LLM agent). There was no second independent reviewer and no "
         "inter-rater agreement statistic (e.g. Cohen's κ).\n"
@@ -505,6 +625,14 @@ def build_paper_md(
         f"The full search log ({len(searches)} event(s)):\n\n"
     )
     out.append(search_strategy_table(searches))
+    comp = idn.get("completeness") or {}
+    if comp.get("n_truncated"):
+        out.append(
+            f"\n{comp['n_truncated']} search / snowball event(s) were truncated: across events "
+            f"with a recorded source total, {comp['n_retrieved_known']} of "
+            f"{comp['n_available_known']} available records were retrieved "
+            "(see Limitations).\n"
+        )
     out.append("\n### 2.3 Selection process\n")
     out.append(
         f"Of {prisma['n_unique']} unique records, {prisma['n_screened']} were screened to a decision "
@@ -514,7 +642,12 @@ def build_paper_md(
     out.append("\n### 2.4 Synthesis method\n")
     out.append(_slot("Describe the synthesis approach (narrative / thematic)"))
     out.append("\n### 2.5 Limitations of this review\n")
-    out.append(limitations_block(prisma["identification"]["by_source"]))
+    out.append(
+        limitations_block(
+            prisma["identification"]["by_source"],
+            prisma["identification"].get("completeness"),
+        )
+    )
 
     out.append("\n## 3. Results\n")
     out.append("\n### 3.1 Study selection\n")
@@ -565,7 +698,12 @@ def build_slides_md(
         (
             "## Method\n\n"
             f"- Source: OpenAlex ({idn['n_database']} records) + snowballing ({idn['n_snowball']} records)\n"
-            f"- {prisma['n_unique']} unique records after de-duplication\n"
+            + (
+                f"- Retrieval completeness: {cl}\n"
+                if (cl := completeness_line(idn.get("completeness") or {}))
+                else ""
+            )
+            + f"- {prisma['n_unique']} unique records after de-duplication\n"
             f"- {prisma['n_screened']} screened -> **{prisma['n_included']} included**\n\n"
             f"![w:520]({prisma_fig})"
         ),
