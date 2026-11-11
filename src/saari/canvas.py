@@ -7,7 +7,6 @@ artifact. No heavy deps in this module — just the stdlib + the DB.
 
 from __future__ import annotations
 
-import html
 import json
 import math
 from dataclasses import dataclass

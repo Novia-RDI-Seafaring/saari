@@ -11,4 +11,45 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
       - run: uv sync --all-extras
-      - run: uv run pytest -q
+      - name: Lint
+        run: uv run ruff check .
+      - name: Test
+        run: uv run pytest -q
+
+  ui:
+    # Same toolchain as release.yml, so a broken SPA build fails here and
+    # not first on a release tag.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Build SPA
+        working-directory: ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+  package:
+    # Build the sdist + wheel the release workflow would publish, then install
+    # the wheel fresh (no uv.lock, so latest allowed deps, like a user's
+    # `uvx saari-mcp`) and check every entry point still imports.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv build
+      - name: Smoke-test the wheel
+        run: |
+          uv venv /tmp/wheel-venv
+          WHEEL=$(ls "$PWD"/dist/*.whl)
+          uv pip install --python /tmp/wheel-venv/bin/python "saari[serve] @ file://$WHEEL"
+          cd /tmp
+          /tmp/wheel-venv/bin/saari --help
+          /tmp/wheel-venv/bin/python -c "import saari.mcp_server, saari.server, saari.agent"
