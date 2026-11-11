@@ -197,24 +197,41 @@ def refresh() -> None:
 @app.command()
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
-    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 25,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results (pages past 100)")] = 25,
     year_from: Annotated[int | None, typer.Option("--year-from")] = None,
     year_to: Annotated[int | None, typer.Option("--year-to")] = None,
     source: Annotated[
         str, typer.Option("--source", "-s", help="openalex | scopus")
     ] = "openalex",
+    scope: Annotated[
+        str,
+        typer.Option("--scope", help="all (incl. full text) | title_abstract"),
+    ] = "all",
+    fetch_all: Annotated[
+        bool,
+        typer.Option("--all", help="Fetch every matching record (refuses above --max-records)"),
+    ] = False,
+    max_records: Annotated[
+        int | None,
+        typer.Option("--max-records", help="Safety cap (default SAARI_SEARCH_MAX_RECORDS or 2000)"),
+    ] = None,
 ) -> None:
     """Search a bibliographic source and persist results into the current project.
 
-    Scopus needs SCOPUS_API_KEY (and, off a registered institutional
-    network, SCOPUS_INST_TOKEN). Results found by both sources are
-    deduplicated by DOI.
+    Reports how many records the source has in total, so a sample is never
+    mistaken for the full result set. Scopus needs SCOPUS_API_KEY (and, off
+    a registered institutional network, SCOPUS_INST_TOKEN). Results found by
+    both sources are deduplicated by DOI.
     """
     from saari.sources import run_search
+    from saari.sources.openalex import OpenAlexError
     from saari.sources.scopus import ScopusError
 
     root = _resolve_root()
-    console.print(f"[dim]{source} search:[/] {query!r}  limit={limit}  @ {root}")
+    console.print(
+        f"[dim]{source} search:[/] {query!r}  "
+        f"{'all' if fetch_all else f'limit={limit}'}  scope={scope}  @ {root}"
+    )
     try:
         result = run_search(
             query,
@@ -223,19 +240,29 @@ def search(
             year_from=year_from,
             year_to=year_to,
             project_root=root,
+            scope=scope,
+            fetch_all=fetch_all,
+            max_records=max_records,
         )
-    except (ValueError, ScopusError) as e:
+    except (ValueError, ScopusError, OpenAlexError) as e:
         console.print(f"[red]error:[/] {e}")
         raise typer.Exit(2) from None
-    if result["n_fetched"] == 0:
-        console.print("[yellow]No results.[/]")
-        return
-
+    avail = result["n_available"]
     console.print(
-        f"[green]Persisted[/] {result['n_fetched']} papers "
+        f"[green]Retrieved {result['n_fetched']} of "
+        f"{avail if avail is not None else 'unknown'} available[/] "
         f"(search #{result['search_id']}, new={result['n_new']}, "
         f"duplicate={result['n_duplicate']})"
     )
+    if result["truncated"]:
+        console.print(
+            "[yellow]note:[/] this is a sample, not the full result set. "
+            "Use --all (or a higher --limit) to retrieve everything, or narrow the query."
+        )
+    for note in result.get("notes") or []:
+        console.print(f"[yellow]note:[/] {note}")
+    if result["n_fetched"] == 0:
+        return
     with db.connect(paths.db_path(root)) as con:
         papers = [p for pid in result["paper_ids"] if (p := db.get_paper(con, pid))]
     _print_paper_table(papers)
@@ -245,12 +272,27 @@ def search(
 def snowball(
     paper_id: Annotated[str, typer.Argument(help="Seed paper id (openalex:Wxxx, DOI, arxiv, or PMID)")],
     direction: Annotated[str, typer.Option("--direction", "-d", help="backward | forward | both")] = "both",
-    max_per_direction: Annotated[int, typer.Option("--max", "-n", help="Max papers per direction")] = 25,
+    max_per_direction: Annotated[
+        int | None, typer.Option("--max", "-n", help="Legacy: max papers in each direction")
+    ] = None,
+    max_backward: Annotated[
+        int | None, typer.Option("--max-backward", help="Max references (default: all)")
+    ] = None,
+    max_forward: Annotated[
+        int, typer.Option("--max-forward", help="Max citing works (default 25)")
+    ] = 25,
+    all_forward: Annotated[
+        bool, typer.Option("--all-forward", help="Fetch all citing works (up to --max-records)")
+    ] = False,
+    max_records: Annotated[
+        int | None,
+        typer.Option("--max-records", help="Safety cap (default SAARI_SEARCH_MAX_RECORDS or 2000)"),
+    ] = None,
 ) -> None:
     """Expand a seed paper's citation neighbors into the project.
 
-    backward: papers this one cites (via OpenAlex `referenced_works`)
-    forward:  papers that cite this one (via OpenAlex `cites:` filter)
+    backward: papers this one cites (via OpenAlex `referenced_works`), all by default
+    forward:  papers that cite this one (via OpenAlex `cites:` filter), 25 by default
     """
     root = _resolve_root()
     result = _snowball(
@@ -258,6 +300,9 @@ def snowball(
         direction=direction,
         max_per_direction=max_per_direction,
         project_root=root,
+        max_backward=max_backward,
+        max_forward=None if all_forward else max_forward,
+        max_records=max_records,
     )
     console.print(
         f"[green]Snowball {result.direction}[/] from {result.seed_paper_id}: "
@@ -265,6 +310,14 @@ def snowball(
         f"([cyan]backward={len(result.backward_paper_ids)}[/] / "
         f"[magenta]forward={len(result.forward_paper_ids)}[/])"
     )
+    for name, st in (("backward", result.backward), ("forward", result.forward)):
+        if st is None:
+            continue
+        avail = st.n_available if st.n_available is not None else "unknown"
+        flag = " [yellow](truncated)[/]" if st.truncated else ""
+        console.print(f"  {name}: retrieved {st.n_retrieved} of {avail} available{flag}")
+        if st.note:
+            console.print(f"  [yellow]note:[/] {st.note}")
     if result.skipped_reason:
         console.print(f"[yellow]note:[/] {result.skipped_reason}")
 
@@ -837,13 +890,19 @@ def searches_list(
     t.add_column("source")
     t.add_column("query")
     t.add_column("n")
+    t.add_column("of")
     t.add_column("created_at")
     for r in rows:
+        avail = r.get("n_available")
+        of = "?" if avail is None else str(avail)
+        if r.get("truncated"):
+            of += " (truncated)"
         t.add_row(
             str(r["id"]),
             r["source"],
             r["query"],
             str(r["n_returned"]),
+            of,
             r["created_at"],
         )
     console.print(t)

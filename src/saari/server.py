@@ -119,7 +119,10 @@ class ScreenBatchIn(BaseModel):
 
 class SnowballIn(BaseModel):
     direction: str = "both"
-    max_per_direction: int = 25
+    max_per_direction: int | None = None  # legacy: sets both directions
+    max_backward: int | None = None  # None = all references
+    max_forward: int | None = 25  # None = all citers up to max_records
+    max_records: int | None = None
 
 
 class SearchIn(BaseModel):
@@ -128,6 +131,9 @@ class SearchIn(BaseModel):
     year_from: int | None = None
     year_to: int | None = None
     source: str = "openalex"
+    scope: str = "all"  # all | title_abstract
+    fetch_all: bool = False
+    max_records: int | None = None
 
 
 class QueryIn(BaseModel):
@@ -418,6 +424,9 @@ def create_app() -> FastAPI:
             direction=body.direction,
             max_per_direction=body.max_per_direction,
             project_root=root,
+            max_backward=body.max_backward,
+            max_forward=body.max_forward,
+            max_records=body.max_records,
         )
         return {
             "seed": r.seed_paper_id,
@@ -427,6 +436,7 @@ def create_app() -> FastAPI:
             "backward_paper_ids": r.backward_paper_ids,
             "forward_paper_ids": r.forward_paper_ids,
             "skipped_reason": r.skipped_reason,
+            **r.completeness(),
         }
 
     # ---------- searches ----------
@@ -441,6 +451,7 @@ def create_app() -> FastAPI:
     @app.post("/api/searches")
     def run_search_endpoint(body: SearchIn) -> dict[str, Any]:
         from saari.sources import run_search
+        from saari.sources.openalex import OpenAlexError
         from saari.sources.scopus import ScopusError
 
         try:
@@ -451,10 +462,13 @@ def create_app() -> FastAPI:
                 year_from=body.year_from,
                 year_to=body.year_to,
                 project_root=paths.project_root(),
+                scope=body.scope,
+                fetch_all=body.fetch_all,
+                max_records=body.max_records,
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
-        except ScopusError as e:
+        except (ScopusError, OpenAlexError) as e:
             raise HTTPException(502, str(e)) from None
 
     @app.get("/api/searches/{search_id}/results")

@@ -34,6 +34,7 @@ import httpx
 
 from saari import paths
 from saari.models import Author, Paper
+from saari.sources.common import SearchHits, SearchTooLarge, default_max_records
 
 BASE_URL = "https://api.elsevier.com/content/search/scopus"
 # STANDARD view pages are capped at 25 entries per request.
@@ -143,19 +144,40 @@ def _dump_raw(entry: dict[str, Any], scopus_id: str, project_root: Path | None) 
     return str(dest.relative_to(project_root or paths.project_root()))
 
 
+# Search scopes, matched to OpenAlex's: "all" = title, abstract and
+# author keywords; "title_abstract" = title and abstract only.
+SCOPES = {"all": "TITLE-ABS-KEY", "title_abstract": "TITLE-ABS"}
+
+
 def search(
     query: str,
     limit: int = 25,
     year_from: int | None = None,
     year_to: int | None = None,
     project_root: Path | None = None,
-) -> list[tuple[Paper, str]]:
-    """Search Scopus TITLE-ABS-KEY. Returns [(paper, raw_path), ...].
+    *,
+    scope: str = "all",
+    fetch_all: bool = False,
+    max_records: int | None = None,
+) -> SearchHits:
+    """Search Scopus TITLE-ABS-KEY (or TITLE-ABS). Returns [(paper, raw_path), ...].
+
+    The result carries `n_available` (`opensearch:totalResults`).
+    `fetch_all` fetches every match, refusing with SearchTooLarge above the
+    safety cap (`max_records`, default SAARI_SEARCH_MAX_RECORDS or 2000).
 
     Persists each raw entry under `.saaristo/raw/scopus/<id>.json`.
     """
+    if scope not in SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(SCOPES)}, got {scope!r}")
+    cap = max_records or default_max_records()
+    if not fetch_all and limit > cap:
+        raise SearchTooLarge(
+            f"limit={limit} exceeds the safety cap of {cap} records. Raise it with "
+            "max_records / SAARI_SEARCH_MAX_RECORDS, or narrow the query."
+        )
     params: dict[str, Any] = {
-        "query": f"TITLE-ABS-KEY({query})",
+        "query": f"{SCOPES[scope]}({query})",
         "count": min(limit, PAGE_SIZE),
         "start": 0,
     }
@@ -165,19 +187,32 @@ def search(
         params["date"] = f"{lo}-{hi}"
 
     headers = _headers()
-    out: list[tuple[Paper, str]] = []
+    out = SearchHits()
+    want = cap if fetch_all else limit
     start = 0
     with httpx.Client(timeout=30.0) as client:
-        while len(out) < limit:
+        while start < want:
             params["start"] = start
-            params["count"] = min(limit - len(out), PAGE_SIZE)
+            params["count"] = min(want - start, PAGE_SIZE)
             resp = client.get(BASE_URL, params=params, headers=headers)
             _raise_for_auth(resp)
             results = resp.json().get("search-results", {})
+            total = int(results.get("opensearch:totalResults") or 0)
+            if out.n_available is None:
+                out.n_available = total
+                if fetch_all:
+                    if total > cap:
+                        raise SearchTooLarge(
+                            f"Scopus search {query!r} has {total} records available, "
+                            f"above the safety cap of {cap}. Narrow the query or raise "
+                            "the cap with max_records / SAARI_SEARCH_MAX_RECORDS."
+                        )
+                    want = total
             entries = results.get("entry") or []
             # An empty result set comes back as one entry holding an "error".
             if not entries or (len(entries) == 1 and "error" in entries[0]):
                 break
+            entries = entries[: want - start]
             start += len(entries)
             for entry in entries:
                 paper = _entry_to_paper(entry)
@@ -185,9 +220,7 @@ def search(
                     continue
                 raw = _dump_raw(entry, paper.id.split(":", 1)[1], project_root)
                 out.append((paper, raw))
-                if len(out) >= limit:
-                    break
-            total = int(results.get("opensearch:totalResults") or 0)
             if start >= total:
                 break
+    out.n_retrieved = start
     return out

@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS search (
     query TEXT NOT NULL,
     params_json TEXT NOT NULL DEFAULT '{}',
     n_returned INTEGER,
+    n_available INTEGER,
+    truncated INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -100,6 +102,13 @@ _PAPER_COLUMNS = [
     ("screening_note", "TEXT"),
 ]
 
+# Completeness metadata on search events. NULL on rows recorded before
+# saari tracked it: the source total is then unknown, not zero.
+_SEARCH_COLUMNS = [
+    ("n_available", "INTEGER"),
+    ("truncated", "INTEGER"),
+]
+
 _VALID_STATUSES = {"candidate", "included", "excluded", "maybe"}
 _STATUS_ALIASES = {
     "include": "included",
@@ -123,6 +132,10 @@ def _migrate(con: sqlite3.Connection) -> None:
     for name, defn in _PAPER_COLUMNS:
         if name not in existing:
             con.execute(f"ALTER TABLE paper ADD COLUMN {name} {defn}")
+    existing = {row["name"] for row in con.execute("PRAGMA table_info(search)")}
+    for name, defn in _SEARCH_COLUMNS:
+        if name not in existing:
+            con.execute(f"ALTER TABLE search ADD COLUMN {name} {defn}")
 
 
 @contextmanager
@@ -264,10 +277,25 @@ def record_search(
     query: str,
     params: dict,
     paper_ids: list[str],
+    n_available: int | None = None,
+    truncated: bool | None = None,
 ) -> int:
+    """Record a search / snowball event.
+
+    `n_available` is the source's total for the query and `truncated`
+    whether fewer were retrieved; None means unknown (not zero / not false).
+    """
     cur = con.execute(
-        "INSERT INTO search (source, query, params_json, n_returned) VALUES (?, ?, ?, ?)",
-        (source, query, json.dumps(params), len(paper_ids)),
+        "INSERT INTO search (source, query, params_json, n_returned, n_available, truncated) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            source,
+            query,
+            json.dumps(params),
+            len(paper_ids),
+            n_available,
+            None if truncated is None else int(bool(truncated)),
+        ),
     )
     search_id = int(cur.lastrowid or 0)
     con.executemany(
