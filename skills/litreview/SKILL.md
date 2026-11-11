@@ -53,6 +53,12 @@ criteria are not systematic and will weaken the exported review.
   results are deduplicated by DOI automatically. If Scopus errors mention
   IP ranges or InstToken, relay the message to the user (it is an
   institutional-access problem, not a bug) and continue with OpenAlex.
+- Check completeness on every search result: `n_available` is the
+  source's total, `truncated` means only a sample was kept. Never report a
+  truncated search as the full result set. Either rerun with
+  `fetch_all=True` (refused above the safety cap, 2000 by default) or
+  narrow the query until it fits. `scope="title_abstract"` drops noisy
+  full-text-only matches and usually shrinks the total a lot.
 - Duplicates are deduplicated automatically; a paper seen in multiple
   searches is a relevance signal (`seen_in` on paper cards).
 - After searching, run `refresh` once to embed new papers and re-project the
@@ -63,7 +69,11 @@ criteria are not systematic and will weaken the exported review.
 ## Step 3: snowball
 
 For each clearly relevant paper found, run `snowball` (references and
-citations via OpenAlex) to pull in its neighborhood. Repeat on newly found
+citations via OpenAlex) to pull in its neighborhood. Backward takes all
+references by default; forward takes 25 citing works unless you pass
+`max_forward=None` (all, up to the safety cap). The result reports
+`n_available` and `truncated` per direction; mention truncated forward
+snowballs to the user. Repeat on newly found
 key papers until snowballing stops surfacing new relevant work (saturation).
 Run `refresh` after snowball rounds.
 
