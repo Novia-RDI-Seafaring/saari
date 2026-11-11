@@ -7,7 +7,7 @@ three-repo archipelago, the paper, the study, the wiki) see `../CLAUDE.md`.
 ## What this repo is
 
 - The `saari` literature-review + visualization toolkit. Python 3.12+,
-  uv-managed (v0.0.1, early stage).
+  uv-managed (v0.1.0, early stage; `pyproject.toml` holds the version).
 - Two services on a shared core: `litreview` and `visualize`, each exposed
   as a **CLI** (`saari`), an **MCP server** (`saari-mcp`), and an
   **HTTP / FastAPI** service (`server.py`).
@@ -21,9 +21,17 @@ three-repo archipelago, the paper, the study, the wiki) see `../CLAUDE.md`.
   the base install is the lean CLI + MCP surface. Tests need the extras.
 - Tests: `uv run pytest -q`. If an issue touches code that has no tests
   yet, **adding the test scaffold is in scope**, not optional.
-- ruff is installed (`uv run ruff check`). A lint CI step is not yet
-  wired in `.github/workflows/ci.yml` because the existing code is
-  unlinted; enable it once the code is cleaned up.
+- Lint: `uv run ruff check .` must pass; CI runs it next to pytest. The
+  rule set lives in `[tool.ruff]` in `pyproject.toml` (ruff defaults for
+  now). Do not run `ruff format` over the whole tree in a feature PR.
+- CI (`.github/workflows/ci.yml`) also builds the SPA in `ui/` and builds
+  plus smoke-installs the wheel, so UI and packaging breaks surface on the
+  PR, not on a release tag.
+- Logging: modules use `log = logging.getLogger(__name__)`; `saari/log.py`
+  configures the `saari` logger at each entry point. Never `print()` or
+  log to stdout from library code: in stdio mode `saari-mcp` speaks
+  JSON-RPC on stdout. INFO is one line per pipeline stage (counts and
+  elapsed time); per-item detail goes to DEBUG.
 - This is one of three sibling repos under `saari2/`. Do NOT create a
   top-level repo, and do not auto-edit `../paper/` or `../study/` from
   code work. Surface manuscript-worthy findings in chat instead.
@@ -84,8 +92,8 @@ plus any teammate agents). Discipline:
    stop without finishing.
 4. **For a ready issue:** branch from the default branch
    (`feat|fix|docs/...`), implement professionally **with tests** (plus
-   adapter parity in the same PR), run `uv run pytest -q` (and lint once
-   configured), open a PR with `Closes #<n>`, drive CI green. **Hold
+   adapter parity in the same PR), run `uv run pytest -q` and
+   `uv run ruff check .`, open a PR with `Closes #<n>`, drive CI green. **Hold
    merge/release for the maintainer** unless told otherwise.
 5. **After each pass**, update the issues so the next agent (you, a
    teammate, a subagent) knows exactly what to do, how to verify, and when

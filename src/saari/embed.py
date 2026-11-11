@@ -8,6 +8,7 @@ the same vectors client-side and filter in the browser.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,11 +24,22 @@ EMBED_DIM = 384
 
 _MODEL_CACHE: dict[str, TextEmbedding] = {}
 
+log = logging.getLogger(__name__)
+
 
 def _get_model(name: str = DEFAULT_MODEL) -> TextEmbedding:
     """Load (and cache) a fastembed TextEmbedding model."""
     if name not in _MODEL_CACHE:
-        _MODEL_CACHE[name] = TextEmbedding(model_name=name)
+        # First load may download the ONNX model; log it so a slow first
+        # `refresh` is explainable.
+        log.info("loading embedding model %s", name)
+        t0 = time.perf_counter()
+        try:
+            _MODEL_CACHE[name] = TextEmbedding(model_name=name)
+        except Exception:
+            log.exception("failed to load embedding model %s", name)
+            raise
+        log.info("loaded %s in %.2fs", name, time.perf_counter() - t0)
     return _MODEL_CACHE[name]
 
 
@@ -64,8 +76,6 @@ def embed_papers(
     Returns counts + model metadata + elapsed time.
     """
     root = project_root or paths.project_root()
-    model = _get_model(model_name)
-
     start = time.perf_counter()
 
     with db.connect(paths.db_path(root)) as con:
@@ -76,7 +86,9 @@ def embed_papers(
             target_ids = [r["id"] for r in rows]
 
         if not target_ids:
+            log.debug("embed: nothing to do (only_missing=%s)", only_missing)
             return EmbedResult(0, 0, model_name, EMBED_DIM, 0.0)
+        log.debug("embed: %d target papers, model=%s", len(target_ids), model_name)
 
         # Pull papers into memory (48 papers * ~3KB = trivial; revisit at 10k+)
         placeholders = ",".join(["?"] * len(target_ids))
@@ -98,16 +110,24 @@ def embed_papers(
 
         n_embedded = 0
         if texts:
+            # Load lazily: a refresh with nothing new to embed must not pay
+            # for (or download) the model.
+            model = _get_model(model_name)
             for batch_start in range(0, len(texts), batch_size):
                 batch_ids = ids[batch_start : batch_start + batch_size]
                 batch_texts = texts[batch_start : batch_start + batch_size]
                 vectors = list(model.embed(batch_texts))
+                log.debug("embed: batch %d-%d done", batch_start, batch_start + len(batch_ids))
                 for pid, vec in zip(batch_ids, vectors):
                     blob = sqlite_vec.serialize_float32(vec.tolist())
                     db.upsert_embedding(con, pid, blob, model_name, EMBED_DIM)
                     n_embedded += 1
 
     elapsed = time.perf_counter() - start
+    log.info(
+        "embedded %d papers (skipped %d with no title/abstract) in %.2fs",
+        n_embedded, skipped, elapsed,
+    )
     return EmbedResult(n_embedded, skipped, model_name, EMBED_DIM, elapsed)
 
 
@@ -138,6 +158,7 @@ def query_corpus(
 
     with db.connect(paths.db_path(root)) as con:
         rows = db.vector_search(con, blob, k=k)
+    log.debug("query_corpus: k=%d -> %d hits", k, len(rows))
 
     # sqlite-vec returns L2 distance on normalized vectors; convert to cosine similarity.
     # For unit-normalized vectors: cos_sim = 1 - (L2^2) / 2

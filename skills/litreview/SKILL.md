@@ -19,8 +19,10 @@ the CLI otherwise.
 
 ## Step 0: bootstrap
 
-1. Check whether the saari MCP tools (`search`, `screen`, `papers_list`, ...)
-   are available in this session. If yes, skip to Step 1.
+1. Check whether the saari MCP tools (`guide`, `search`, `screen`, ...)
+   are available in this session. If yes, call `guide`: it returns the
+   pipeline, each tool's prerequisites, and `next` (the recommended next
+   call for this project's state). Then skip to Step 1.
 2. Check the CLI: `uvx saari where`. If saari is not installed, install it
    with `uv tool install saari` (or use `uvx saari ...` per call).
 3. If the folder is not yet a saari project, run `saari init`. This creates
@@ -41,7 +43,8 @@ Never search before the protocol is set. Ask the user for, then record:
 - a working title.
 
 Record them with `saari study set --title ... --question ... --criteria ...`
-(CLI) or the `study` MCP tool. Screening decisions made without recorded
+(CLI) or the `study_set` MCP tool. The question and criteria also drive the
+relevance ranking in `triage`, so write them as concrete prose. Screening decisions made without recorded
 criteria are not systematic and will weaken the exported review.
 
 ## Step 2: search wide
@@ -53,31 +56,83 @@ criteria are not systematic and will weaken the exported review.
   results are deduplicated by DOI automatically. If Scopus errors mention
   IP ranges or InstToken, relay the message to the user (it is an
   institutional-access problem, not a bug) and continue with OpenAlex.
-- Duplicates are deduplicated automatically; a paper seen in multiple
-  searches is a relevance signal (`seen_in` on paper cards).
-- After searching, run `refresh` once to embed new papers and re-project the
-  landscape. Then use `query` (semantic search over the corpus) to check
-  coverage: if an obviously relevant phrasing returns thin results, search
+- Check completeness on every search result: `n_available` is the
+  source's total, `truncated` means only a sample was kept. Never report a
+  truncated search as the full result set. Either rerun with
+  `fetch_all=True` (refused above the safety cap, 2000 by default) or
+  narrow the query until it fits. `scope="title_abstract"` drops noisy
+  full-text-only matches and usually shrinks the total a lot.
+- `source="crossref"` is a keyless third database (publisher metadata,
+  abstracts often missing).
+- Papers the user already knows (a DOI, arXiv id, PMID, OpenAlex id, or
+  their URLs) go in with `paper_add`, not with a keyword search. They are
+  logged as a `manual` event and counted in PRISMA under other methods.
+- Exact-identifier duplicates are deduplicated automatically; a paper seen
+  in multiple searches is a relevance signal (`seen_in` on paper cards).
+- Before screening, run `duplicates_list`. It lists likely duplicates
+  (e.g. preprint vs published version) but never merges them. For each
+  pair, compare the records and either `papers_merge(keep, remove)` or
+  `duplicates_dismiss(a, b)`. Ask the user when unsure: a false merge is
+  worse than a missed duplicate.
+- Keyword search is noisy. After searching, run `refresh` once to embed new
+  papers and re-project the landscape. Then use `query` (semantic search
+  over the corpus) to check coverage. Write the query as 2-3 sentences
+  describing what a relevant paper says; that beats keywords by a wide
+  margin. If an obviously relevant phrasing returns thin results, search
   again with new terms.
 
 ## Step 3: snowball
 
-For each clearly relevant paper found, run `snowball` (references and
-citations via OpenAlex) to pull in its neighborhood. Repeat on newly found
-key papers until snowballing stops surfacing new relevant work (saturation).
-Run `refresh` after snowball rounds.
+Once some papers are included, run `snowball_included` (CLI:
+`saari snowball-included`). It snowballs every included paper (references
+and citers via OpenAlex) in one call and skips seeds already snowballed, so
+each later round only expands new includes. Use `top_n` to cap a large
+round, or `snowball` for a single seed. Backward takes all references by
+default; forward takes 25 citing works per seed unless you raise
+`max_forward` (`None` = all, up to the safety cap). Results report
+`n_available` and `truncated` per direction; tell the user about truncated
+forward snowballs. After each round: `refresh`, screen the arrivals, and
+run `snowball_included` again. The round reports `saturated: true` when it
+found nothing new; that is the stopping signal.
 
 ## Step 4: screen with reasons
 
 - Screen every candidate to `included`, `excluded`, or `maybe` using
   `screen`, and always record a short note with the reason, phrased against
   the protocol's criteria.
-- Use `triage` / `papers_list` to work through candidates in batches; read
-  abstracts (`paper_show`) before deciding. Do not screen on titles alone
+- Use `triage` to work through candidates in batches. By default it ranks
+  by semantic relevance to the protocol (each card has a `score`) once
+  papers are embedded, else by `seen_in`; the reply's `sort` and `note` say
+  which. `triage(query="...")` gives the most relevant undecided papers for
+  a specific sub-topic. Avoid `sort="cited"` for screening: it surfaces
+  famous off-topic papers first. Read abstracts (`paper_show`) before
+  deciding. Do not screen on titles alone
   unless the title alone establishes an exclusion criterion.
 - Revisit `maybe` papers at the end; a review should ship with zero maybes.
 - The user is the reviewer of record: for borderline calls, present the
   abstract and your reasoning and let the user decide.
+
+## Step 4b: full text for included and maybe papers
+
+Title/abstract screening comes first. Then, for papers you need to verify or
+synthesize, fetch open-access full text:
+
+- `fulltext_fetch` (CLI: `saari fulltext fetch`) fetches OA copies for all
+  `included` papers (pass `status="maybe"` for borderline ones) and returns
+  how many were retrieved plus a reason for each paper without full text.
+- `paper_text(paper_id)` returns metadata and a 4000-char slice. Page with
+  `offset` / `next_offset`; use `grep="regex"` to jump to methods, results,
+  or a specific claim instead of reading everything. Cached after the first
+  fetch, so repeat reads are free.
+- Only open-access copies are used. `unavailable` means no OA copy is known;
+  `failed` means one was tried and the reason says why. Do not try to get
+  around paywalls; ask the user for the PDF instead.
+- Check `quality` and `source_version` (a `submittedVersion` preprint may
+  differ from the published paper). Needs the `saari[fulltext]` extra; if a
+  tool returns an install hint, relay it to the user.
+- Record in screening notes when a decision was made or revised on full
+  text. Retrieved is not the same as read: the exported Limitations section
+  reports retrieval counts only.
 
 ## Step 5: map the landscape
 

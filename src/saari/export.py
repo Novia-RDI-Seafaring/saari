@@ -6,6 +6,7 @@ v1: BibTeX (what `paper/` will cite). Keys follow the Better BibTeX convention:
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from pathlib import Path
 
 from saari import db, paths
 from saari.models import Paper
+
+log = logging.getLogger(__name__)
 
 _NONWORD = re.compile(r"[^a-z0-9]+")
 _BIBTEX_ESCAPES = str.maketrans({
@@ -148,6 +151,7 @@ def export_bibtex(
         header_bits.append(f"% status filter: {status_filter}")
     header_bits.append(f"% {len(entries)} entries")
     out.write_text("\n".join(header_bits) + "\n\n" + "\n\n".join(entries) + "\n")
+    log.info("wrote %d bibtex entries to %s (status=%s)", len(entries), out, status_filter)
     return ExportResult(path=str(out), n_entries=len(entries), format="bibtex")
 
 
@@ -207,7 +211,12 @@ def export_paper(out: Path, project_root: Path | None = None) -> ExportResult:
             con, limit=1_000_000, status="included",
             order_by="year ASC NULLS LAST, first_seen_at ASC",
         )
-    md = report.build_paper_md(study.get(root), prisma, funnel["searches"], themes, included)
+    from saari.fulltext import coverage
+
+    md = report.build_paper_md(
+        study.get(root), prisma, funnel["searches"], themes, included,
+        fulltext=coverage(root),
+    )
     _figures(root, out_dir)
     export_bibtex(out_dir / "refs.bib", status_filter="included", project_root=root)
     out.write_text(md)
@@ -242,4 +251,5 @@ def export_slr(out_dir: Path | None = None, project_root: Path | None = None) ->
     export_prisma(target / "prisma.mmd", fmt="mermaid", project_root=root)
     paper = export_paper(target / "paper.md", project_root=root)  # also writes svgs + refs.bib
     export_slides(target / "slides.md", project_root=root)
+    log.info("wrote SLR bundle to %s (%d included papers)", target, paper.n_entries)
     return ExportResult(path=str(target), n_entries=paper.n_entries, format="slr-bundle")

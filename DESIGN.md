@@ -267,5 +267,5 @@ When the wiki service comes back, it adds a third tier — **promoted** papers b
 - Web UI.
 - Multi-user, sharing, sync.
 - Reference manager replacement (Zotero etc.). We export to BibTeX; we don't manage your library.
-- PDF full-text ingestion. (Possible v2 if needed for screening.)
+- PDF full-text ingestion beyond open-access fetch + plain-text extraction. The optional `fulltext` extra (`paper_text`, `fulltext_fetch`) covers reading OA PDFs; embedding full text, chunked RAG, and OCR remain out of scope.
 - Real-time monitoring of new papers.

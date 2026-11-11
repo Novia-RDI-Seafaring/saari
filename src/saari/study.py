@@ -11,11 +11,14 @@ is the same as "no study metadata yet".
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from saari import paths
+
+log = logging.getLogger(__name__)
 
 
 def study_path(project_root: Path | None = None) -> Path:
@@ -46,8 +49,10 @@ def get(project_root: Path | None = None) -> dict[str, Any]:
             stored = json.loads(p.read_text())
             if isinstance(stored, dict):
                 base.update(stored)
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, json.JSONDecodeError) as e:
+            # Keep serving defaults, but say so: silently dropping a
+            # hand-edited protocol is how a review loses its criteria.
+            log.warning("ignoring unreadable %s: %s", p, e)
     return base
 
 
@@ -82,6 +87,7 @@ def update(
     cur["updated_at"] = _now()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(cur, indent=2) + "\n")
+    log.debug("updated %s", p)
     return cur
 
 
@@ -97,11 +103,22 @@ def funnel(project_root: Path | None = None) -> dict[str, Any]:
     root = project_root or paths.project_root()
     with db.connect(paths.db_path(root)) as con:
         sr = con.execute(
-            "SELECT id, source, query, n_returned, created_at FROM search ORDER BY created_at ASC"
+            "SELECT id, source, query, n_returned, n_available, truncated, created_at "
+            "FROM search ORDER BY created_at ASC"
         ).fetchall()
         searches = [dict(r) for r in sr]
         n_fetched = sum(int(r["n_returned"] or 0) for r in sr)
         n_unique = con.execute("SELECT COUNT(*) FROM paper").fetchone()[0]
+        # Records that entered outside any recorded search event (e.g. a
+        # snowball seed fetched by id), plus such records later folded into
+        # another by a reviewer merge. Lets PRISMA count them exactly.
+        n_unlinked = con.execute(
+            "SELECT COUNT(*) FROM paper p WHERE NOT EXISTS "
+            "(SELECT 1 FROM search_result sr WHERE sr.paper_id = p.id)"
+        ).fetchone()[0]
+        merge_row = con.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(absorbed_unlinked), 0) AS absorbed FROM paper_merge"
+        ).fetchone()
         by_status_rows = con.execute(
             "SELECT status, COUNT(*) AS n FROM paper GROUP BY status"
         ).fetchall()
@@ -119,6 +136,8 @@ def funnel(project_root: Path | None = None) -> dict[str, Any]:
         "searches": searches,
         "n_fetched": n_fetched,
         "n_unique": n_unique,
+        "n_unlinked": int(n_unlinked) + int(merge_row["absorbed"]),
+        "n_merged": int(merge_row["n"]),
         "n_screened": total_screened,
         "n_unscreened": by_status.get("candidate", 0),
         "by_status": by_status,

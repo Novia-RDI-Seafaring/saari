@@ -13,6 +13,8 @@ Routes:
     GET  /api/papers/{id}/similar
     POST /api/papers/{id}/screen
     POST /api/papers/{id}/snowball
+    GET  /api/fulltext/{id}          (OA full text: slice / grep)
+    POST /api/fulltext/fetch         (batch OA full-text fetch)
     GET  /api/searches
     POST /api/searches               (openalex or scopus, DOI-deduped)
     GET  /api/searches/{id}/results
@@ -21,6 +23,9 @@ Routes:
     POST /api/project-corpus
     POST /api/refresh
     POST /api/query
+    GET  /api/triage                 (candidate queue; sort=auto|relevance|seen_in|cited)
+    GET  /api/guide                  (workflow map + next step)
+    POST /api/snowball-included      (snowball all included papers)
     GET  /api/agent/stream           (SSE — Pydantic AI chat)
 
 Static SPA mounted last at `/` with html=True so deep links work.
@@ -119,7 +124,25 @@ class ScreenBatchIn(BaseModel):
 
 class SnowballIn(BaseModel):
     direction: str = "both"
-    max_per_direction: int = 25
+    max_per_direction: int | None = None  # legacy: sets both directions
+    max_backward: int | None = None  # None = all references
+    max_forward: int | None = 25  # None = all citers up to max_records
+    max_records: int | None = None
+
+
+class FulltextFetchIn(BaseModel):
+    status: str | None = "included"
+    refresh: bool = False
+    limit: int | None = None
+
+
+class SnowballIncludedIn(BaseModel):
+    top_n: int | None = None
+    sort: str = "auto"
+    direction: str = "both"
+    max_backward: int | None = None  # None = all references
+    max_forward: int | None = 25  # None = all citers up to the cap
+    skip_done: bool = True
 
 
 class SearchIn(BaseModel):
@@ -128,6 +151,26 @@ class SearchIn(BaseModel):
     year_from: int | None = None
     year_to: int | None = None
     source: str = "openalex"
+    scope: str = "all"  # all | title_abstract
+    fetch_all: bool = False
+    max_records: int | None = None
+
+
+class PaperAddIn(BaseModel):
+    identifiers: list[str]
+    note: str | None = None
+
+
+class MergeIn(BaseModel):
+    keep: str
+    remove: str
+    reason: str | None = None
+
+
+class DismissIn(BaseModel):
+    a: str
+    b: str
+    note: str | None = None
 
 
 class QueryIn(BaseModel):
@@ -179,7 +222,9 @@ class ProjectCreate(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="saari", version="0.0.1")
+    from saari import __version__
+
+    app = FastAPI(title="saari", version=__version__)
 
     # Vite dev server proxy still works without CORS, but allow it for direct dev.
     app.add_middleware(
@@ -312,14 +357,38 @@ def create_app() -> FastAPI:
             "papers": [_to_card(p).model_dump() for p in papers],
         }
 
-    @app.get("/api/papers/{paper_id:path}")
-    def get_paper(paper_id: str) -> dict[str, Any]:
-        root = paths.project_root()
-        with db.connect(paths.db_path(root)) as con:
-            p = db.get_paper(con, paper_id)
-        if not p:
-            raise HTTPException(404, f"Paper not found: {paper_id}")
-        return p.model_dump(mode="json")
+    @app.post("/api/papers")
+    def papers_add(body: PaperAddIn) -> dict[str, Any]:
+        from saari.sources import add_papers
+
+        return add_papers(body.identifiers, note=body.note, project_root=paths.project_root())
+
+    @app.get("/api/duplicates")
+    def duplicates_list() -> dict[str, Any]:
+        from saari import dedup
+
+        with db.connect(paths.db_path(paths.project_root())) as con:
+            return {"candidates": dedup.find_candidates(con)}
+
+    @app.post("/api/duplicates/merge")
+    def duplicates_merge(body: MergeIn) -> dict[str, Any]:
+        from saari import dedup
+
+        try:
+            with db.connect(paths.db_path(paths.project_root())) as con:
+                return dedup.merge(con, body.keep, body.remove, reason=body.reason)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/api/duplicates/dismiss")
+    def duplicates_dismiss(body: DismissIn) -> dict[str, Any]:
+        from saari import dedup
+
+        try:
+            with db.connect(paths.db_path(paths.project_root())) as con:
+                return dedup.dismiss(con, body.a, body.b, note=body.note)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
 
     @app.get("/api/papers/{paper_id:path}/links")
     def paper_links(paper_id: str) -> dict[str, Any]:
@@ -389,6 +458,52 @@ def create_app() -> FastAPI:
             ],
         }
 
+    # ---------- full text (own prefix: /api/papers/{id:path} would shadow it) ----------
+
+    # Registered after the /links, /raw and /similar sub-routes: the :path
+    # converter would otherwise swallow them.
+    @app.get("/api/papers/{paper_id:path}")
+    def get_paper(paper_id: str) -> dict[str, Any]:
+        root = paths.project_root()
+        with db.connect(paths.db_path(root)) as con:
+            p = db.get_paper(con, paper_id)
+        if not p:
+            raise HTTPException(404, f"Paper not found: {paper_id}")
+        return p.model_dump(mode="json")
+
+    @app.get("/api/fulltext/{paper_id:path}")
+    def paper_text(
+        paper_id: str,
+        offset: int = 0,
+        max_chars: int = 4000,
+        grep: str | None = None,
+        fetch: bool = True,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        from saari import fulltext as _ft
+
+        try:
+            return _ft.read_text(
+                paper_id, offset=offset, max_chars=max_chars, grep=grep,
+                fetch_if_missing=fetch, refresh=refresh, project_root=paths.project_root(),
+            )
+        except KeyError:
+            raise HTTPException(404, f"Paper not found: {paper_id}") from None
+        except _ft.FulltextDependencyError as e:
+            raise HTTPException(501, str(e)) from None
+
+    @app.post("/api/fulltext/fetch")
+    def fulltext_fetch(body: FulltextFetchIn) -> dict[str, Any]:
+        from saari import fulltext as _ft
+
+        try:
+            return _ft.fetch_many(
+                status=body.status, refresh=body.refresh, limit=body.limit,
+                project_root=paths.project_root(),
+            )
+        except _ft.FulltextDependencyError as e:
+            raise HTTPException(501, str(e)) from None
+
     @app.post("/api/screen-batch")
     def screen_batch(body: ScreenBatchIn) -> dict[str, Any]:
         root = paths.project_root()
@@ -412,13 +527,23 @@ def create_app() -> FastAPI:
 
     @app.post("/api/papers/{paper_id:path}/snowball")
     def snowball(paper_id: str, body: SnowballIn) -> dict[str, Any]:
+        from saari.sources.openalex import OpenAlexError
+
         root = paths.project_root()
-        r = _snowball(
-            paper_id,
-            direction=body.direction,
-            max_per_direction=body.max_per_direction,
-            project_root=root,
-        )
+        try:
+            r = _snowball(
+                paper_id,
+                direction=body.direction,
+                max_per_direction=body.max_per_direction,
+                project_root=root,
+                max_backward=body.max_backward,
+                max_forward=body.max_forward,
+                max_records=body.max_records,
+            )
+        except ValueError as e:  # unknown seed, bad direction, over the cap
+            raise HTTPException(400, str(e)) from None
+        except OpenAlexError as e:
+            raise HTTPException(502, str(e)) from None
         return {
             "seed": r.seed_paper_id,
             "direction": r.direction,
@@ -427,7 +552,76 @@ def create_app() -> FastAPI:
             "backward_paper_ids": r.backward_paper_ids,
             "forward_paper_ids": r.forward_paper_ids,
             "skipped_reason": r.skipped_reason,
+            **r.completeness(),
         }
+
+    @app.post("/api/snowball-included")
+    def snowball_included(body: SnowballIncludedIn) -> dict[str, Any]:
+        from saari.snowball_batch import snowball_seeds
+
+        try:
+            return snowball_seeds(
+                top_n=body.top_n,
+                sort=body.sort,
+                direction=body.direction,
+                max_backward=body.max_backward,
+                max_forward=body.max_forward,
+                skip_done=body.skip_done,
+                project_root=paths.project_root(),
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.get("/api/triage")
+    def triage(
+        limit: int = 20,
+        sort: str = "auto",
+        query: str | None = None,
+        min_citations: int | None = None,
+        year_from: int | None = None,
+        seen_in_at_least: int | None = None,
+    ) -> dict[str, Any]:
+        from saari.triage import rank_papers
+
+        root = paths.project_root()
+        try:
+            r = rank_papers(
+                status="candidate",
+                sort=sort,
+                query=query,
+                limit=limit,
+                min_citations=min_citations,
+                year_from=year_from,
+                seen_in_at_least=seen_in_at_least,
+                project_root=root,
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        with db.connect(paths.db_path(root)) as con:
+            n_candidates = db.count_by_status(con).get("candidate", 0)
+        cards = []
+        for p in r.papers:
+            card = _to_card(p).model_dump()
+            if r.sort == "relevance":
+                card["score"] = r.scores.get(p.id)
+            cards.append(card)
+        out: dict[str, Any] = {
+            "n_candidates": n_candidates,
+            "n_matching": r.n_matching,
+            "shown": len(cards),
+            "sort": r.sort,
+            "basis": r.basis,
+            "papers": cards,
+        }
+        if r.note:
+            out["note"] = r.note
+        return out
+
+    @app.get("/api/guide")
+    def guide() -> dict[str, Any]:
+        from saari.guide import guide_data
+
+        return guide_data(project_root=paths.project_root())
 
     # ---------- searches ----------
 
@@ -441,6 +635,8 @@ def create_app() -> FastAPI:
     @app.post("/api/searches")
     def run_search_endpoint(body: SearchIn) -> dict[str, Any]:
         from saari.sources import run_search
+        from saari.sources.openalex import OpenAlexError
+        from saari.sources.crossref import CrossrefError
         from saari.sources.scopus import ScopusError
 
         try:
@@ -451,10 +647,13 @@ def create_app() -> FastAPI:
                 year_from=body.year_from,
                 year_to=body.year_to,
                 project_root=paths.project_root(),
+                scope=body.scope,
+                fetch_all=body.fetch_all,
+                max_records=body.max_records,
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
-        except ScopusError as e:
+        except (ScopusError, OpenAlexError, CrossrefError) as e:
             raise HTTPException(502, str(e)) from None
 
     @app.get("/api/searches/{search_id}/results")

@@ -40,7 +40,8 @@ def build_stages(
     `write_slots`: `<!-- WRITE: -->` slots left in paper.md (None = no file).
     """
     searches = funnel.get("searches", [])
-    db_searches = [s for s in searches if (s.get("source") or "") != "snowball"]
+    # Manual additions by identifier are not database searches.
+    db_searches = [s for s in searches if (s.get("source") or "") not in ("snowball", "manual")]
     n_records = sum(int(s.get("n_returned") or 0) for s in searches)
     by_status = funnel.get("by_status", {})
     n_total = int(funnel.get("n_unique", 0))

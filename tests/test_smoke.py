@@ -28,7 +28,7 @@ def test_version_matches_pyproject():
 
 def test_models_importable():
     """Core Pydantic models must be importable and constructable without side effects."""
-    from saari.models import Paper, Author, Location
+    from saari.models import Paper
 
     p = Paper(id="openalex:W123", title="Test Paper")
     assert p.id == "openalex:W123"

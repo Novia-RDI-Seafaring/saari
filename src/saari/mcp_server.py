@@ -31,11 +31,14 @@ from saari.export import (
     export_slides as _export_slides,
     export_slr as _export_slr,
 )
+from saari.guide import MCP_INSTRUCTIONS, guide_data as _guide_data
 from saari.models import Paper
 from saari.projection import project_corpus as _project_corpus
 from saari.snowball import snowball as _snowball
+from saari.snowball_batch import snowball_seeds as _snowball_seeds
+from saari.triage import rank_papers as _rank_papers
 
-mcp = FastMCP("saari")
+mcp = FastMCP("saari", instructions=MCP_INSTRUCTIONS)
 
 
 class PaperCard(BaseModel):
@@ -78,12 +81,20 @@ def _to_card(p: Paper, include_excerpt: bool = False) -> PaperCard:
 
 
 @mcp.tool()
-def project_info() -> dict[str, Any]:
-    """Report the active saaristo project root, key paths, corpus counts, and pipeline state.
+def guide() -> dict[str, Any]:
+    """Start here. The workflow map in one call: pipeline stages in order, the
+    tools for each, what each tool requires, this project's state per stage,
+    and `next` = {stage, tool, why}, the recommended next call.
+    """
+    return _guide_data()
 
-    `pipeline` tells the agent which operations are ready to run:
-    - `embedded`: how many papers have vectors (needed for query/similar/project/canvas)
-    - `projected`: how many have 2D coords (needed for canvas)
+
+@mcp.tool()
+def project_info() -> dict[str, Any]:
+    """Project root, key paths, corpus counts by status, and pipeline counts.
+
+    `pipeline.embedded` < `n_papers` means run `refresh` before `query`,
+    `papers_similar`, or relevance triage. For "what next?" call `guide`.
     """
     root = paths.project_root()
     with db.connect(paths.db_path(root)) as con:
@@ -109,13 +120,10 @@ def project_info() -> dict[str, Any]:
 
 @mcp.tool()
 def review_status() -> dict[str, Any]:
-    """Where the systematic review stands: the five SLR stages, derived from the DB.
-
-    Stages: protocol -> search -> screen -> snowball -> report. Each has
-    `state` (done | active | todo), a factual `detail`, and a methodology
-    `hint`. `next` names the first stage that is not done -- the recommended
-    place to work. Use this to answer "where are we?" and to pick the next
-    action; the same data drives the stepper in the web UI.
+    """Where the review stands: the five SLR stages (protocol, search, screen,
+    snowball, report), each with `state` (done | active | todo), `detail`,
+    and a methodology `hint`; `next` is the first stage not done. `guide`
+    wraps this with tool names and a concrete next call.
     """
     from saari.status import stages_data
 
@@ -129,16 +137,34 @@ def search(
     year_from: int | None = None,
     year_to: int | None = None,
     source: str = "openalex",
+    scope: str = "all",
+    fetch_all: bool = False,
+    max_records: int | None = None,
 ) -> dict[str, Any]:
-    """Search a bibliographic source and persist results into the project.
+    """Keyword search a bibliographic source; persist hits as candidates.
 
-    `source`: "openalex" (default, keyless) or "scopus" (needs
-    SCOPUS_API_KEY, and SCOPUS_INST_TOKEN off a registered institutional
-    network; Scopus records may lack abstracts). Results are deduplicated
-    across sources by DOI.
+    Keyword search is noisy. Run several phrasings, then `refresh` and
+    `query` (a 2-3 sentence prose description beats keywords) or `triage`
+    to re-rank semantically. Set the protocol (`study_set`) first.
 
-    Returns a summary (`search_id`, counts, `paper_ids`). Use `papers_list`
-    or `paper_show` to read the actual paper data.
+    `source`: "openalex" (default, keyless), "scopus" (needs
+    SCOPUS_API_KEY, plus SCOPUS_INST_TOKEN off a registered institutional
+    network; records may lack abstracts), or "crossref" (keyless, abstracts
+    often missing). Deduplicated across sources by DOI / PMID / arXiv id.
+
+    Completeness: `n_available` is the source's total for the query and
+    `truncated` is True when only a sample was kept. A systematic review
+    must screen everything a query returns: when truncated, rerun with
+    `fetch_all=True` or narrow the query.
+    - `limit`: records to fetch (pages automatically).
+    - `fetch_all`: every match; refused above the safety cap `max_records`
+      (default SAARI_SEARCH_MAX_RECORDS or 2000).
+    - `scope`: "all" (OpenAlex also matches full text) or "title_abstract"
+      (less noisy; not available for crossref).
+
+    Returns `{search_id, n_fetched, n_available, truncated, n_new,
+    n_duplicate, paper_ids}`, no paper
+    data; read it with `triage` / `papers_list` / `paper_show`.
     """
     from saari.sources import run_search
 
@@ -149,6 +175,9 @@ def search(
         year_from=year_from,
         year_to=year_to,
         project_root=paths.project_root(),
+        scope=scope,
+        fetch_all=fetch_all,
+        max_records=max_records,
     )
 
 
@@ -165,7 +194,10 @@ def papers_list(
     sort: str = "recent",
     include_excerpt: bool = False,
 ) -> dict[str, Any]:
-    """List papers in the project DB with composable filters. Returns compact PaperCards.
+    """List papers with composable filters as compact PaperCards `{n, papers}`.
+
+    For the screening queue prefer `triage` (relevance-ranked); use this to
+    browse a status (e.g. status="included") or filter by year/citations.
 
     Filters:
     - `status`: candidate | included | excluded | maybe
@@ -206,34 +238,61 @@ def papers_list(
 @mcp.tool()
 def triage(
     limit: int = 20,
+    sort: str = "auto",
+    query: str | None = None,
     min_citations: int | None = None,
     year_from: int | None = None,
     seen_in_at_least: int | None = None,
 ) -> dict[str, Any]:
-    """Return the top undecided (status='candidate') papers as compact cards with
-    abstract excerpts — sorted by citation count. The triage workflow: call this,
-    scan the cards, then call `screen` for each decision.
+    """The screening queue: top undecided (candidate) papers with abstract
+    excerpts. Scan the cards, `paper_show` if unsure, then `screen` each.
 
-    Returns `{n_candidates, papers}`. `n_candidates` is the full pool (not the
-    `limit`-slice), so the agent knows how much work remains.
+    `sort`:
+    - `relevance`: cosine similarity to `query` if given, else to the study
+      protocol (title + question + criteria). Each card gets `score`.
+    - `seen_in`: found by the most searches/snowballs first.
+    - `cited`: citation count (surfaces famous, often off-topic papers).
+    - `auto` (default): relevance when a protocol/query and embeddings exist,
+      else seen_in. `sort` in the reply is the order actually applied;
+      `note` explains any fallback (e.g. run `refresh` to embed).
+    Pass `query` for "most relevant undecided papers about X".
+
+    Returns `{n_candidates, n_matching, shown, sort, basis, papers}`;
+    `n_candidates` is the whole remaining pool, not the slice.
     """
     root = paths.project_root()
-    with db.connect(paths.db_path(root)) as con:
-        counts = db.count_by_status(con)
-        papers = db.list_papers(
-            con,
-            limit=limit,
+    try:
+        r = _rank_papers(
             status="candidate",
+            sort=sort,
+            query=query,
+            limit=limit,
             min_citations=min_citations,
             year_from=year_from,
             seen_in_at_least=seen_in_at_least,
-            order_by="COALESCE(cited_by_count, 0) DESC",
+            project_root=root,
         )
-    return {
+    except ValueError as e:
+        return {"error": str(e), "papers": []}
+    with db.connect(paths.db_path(root)) as con:
+        counts = db.count_by_status(con)
+    cards = []
+    for p in r.papers:
+        card = _to_card(p, include_excerpt=True).model_dump()
+        if r.sort == "relevance":
+            card["score"] = r.scores.get(p.id)
+        cards.append(card)
+    out: dict[str, Any] = {
         "n_candidates": counts.get("candidate", 0),
-        "shown": len(papers),
-        "papers": [_to_card(p, include_excerpt=True).model_dump() for p in papers],
+        "n_matching": r.n_matching,
+        "shown": len(cards),
+        "sort": r.sort,
+        "basis": r.basis,
+        "papers": cards,
     }
+    if r.note:
+        out["note"] = r.note
+    return out
 
 
 @mcp.tool()
@@ -242,12 +301,12 @@ def screen(
     decision: str,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Mark a paper as included / excluded / maybe (or reset to candidate).
+    """Record a screening decision: included | excluded | maybe | candidate.
 
-    Accepts aliases: include→included, exclude/reject→excluded, keep/yes→included,
-    no→excluded, reset→candidate.
-
-    Returns `{paper_id, status, ok}`. Status is the normalized stored value.
+    Always pass `note`: the reason, phrased against the protocol criteria
+    (notes feed the PRISMA exclusion box). Aliases: include, exclude, reject,
+    keep, yes, no, reset. Returns `{paper_id, status, ok}`; ok=False means
+    the id was not found. Next: more `triage`, or `snowball_included`.
     """
     root = paths.project_root()
     normalized = db.normalize_status(decision)
@@ -258,9 +317,11 @@ def screen(
 
 @mcp.tool()
 def paper_show(paper_id: str) -> dict[str, Any] | None:
-    """Return the full Paper record (authors, abstract, references, locations, etc.).
+    """Full Paper record: authors, full abstract, referenced_works, locations,
+    screening status + note. Use before a borderline `screen` decision.
 
-    Accepts an OpenAlex id (`openalex:Wxxx` or bare `Wxxx`), DOI, arxiv ID, or PMID.
+    Accepts a paper id (`openalex:Wxxx`), DOI, arXiv id, or PMID. Returns
+    null if unknown.
     """
     root = paths.project_root()
     with db.connect(paths.db_path(root)) as con:
@@ -270,10 +331,9 @@ def paper_show(paper_id: str) -> dict[str, Any] | None:
 
 @mcp.tool()
 def paper_links(paper_id: str) -> dict[str, Any] | None:
-    """Return all known hosting locations — publisher page, arXiv, PMC, repositories.
-
-    Best source for "where can I get the PDF?" — look for `locations[].pdf_url`
-    where `is_oa` is True.
+    """Where a paper is hosted: DOI, landing page, pdf_url, and all
+    `locations` (publisher, arXiv, PMC, repositories). For a readable copy
+    look for `locations[].pdf_url` with `is_oa` true. Null if unknown.
     """
     root = paths.project_root()
     with db.connect(paths.db_path(root)) as con:
@@ -296,11 +356,9 @@ def paper_links(paper_id: str) -> dict[str, Any] | None:
 
 @mcp.tool()
 def paper_raw(paper_id: str) -> dict[str, Any] | None:
-    """Return the raw source API response (OpenAlex JSON) captured at fetch time.
-
-    Useful when the normalized fields miss nuance, when OpenAlex mis-merged a
-    record, or when you want to see fields we don't yet extract.
-    Response includes both the filesystem `path` (you can `Read` it) and the `content`.
+    """The raw source API JSON captured at fetch time, as `{path, content}`.
+    Use only when normalized fields look wrong or miss something; it is
+    large. Null if no raw payload was stored.
     """
     root = paths.project_root()
     with db.connect(paths.db_path(root)) as con:
@@ -314,8 +372,130 @@ def paper_raw(paper_id: str) -> dict[str, Any] | None:
 
 
 @mcp.tool()
+def paper_add(identifiers: list[str], note: str | None = None) -> dict[str, Any]:
+    """Add papers you already know by identifier (not via keyword search).
+
+    Each identifier may be a DOI, a doi.org URL, an arXiv id or URL, a PMID
+    (`pmid:12345` or PubMed URL), or an OpenAlex id/URL. Resolved via
+    OpenAlex, with Crossref as the fallback for DOIs OpenAlex lacks. All are
+    recorded as one `manual` identification event, reported in PRISMA under
+    "other methods". Papers already in the corpus count as duplicates.
+
+    Returns per-identifier `results` (`status`: added | duplicate |
+    not_found | invalid | error) plus counts and `paper_ids`.
+    """
+    from saari.sources import add_papers
+
+    return add_papers(identifiers, note=note, project_root=paths.project_root())
+
+
+@mcp.tool()
+def duplicates_list() -> dict[str, Any]:
+    """List candidate duplicate pairs for the reviewer to resolve.
+
+    Exact-DOI duplicates are already merged at ingest. These are weaker
+    matches: shared PMID / arXiv id, or same normalized title + year (+-1)
+    + first-author surname (preprint vs published version). Nothing is
+    merged automatically. Resolve each with `papers_merge` or
+    `duplicates_dismiss`; `suggested_keep` is only a hint.
+    """
+    from saari import dedup
+
+    with db.connect(paths.db_path(paths.project_root())) as con:
+        return {"candidates": dedup.find_candidates(con)}
+
+
+@mcp.tool()
+def papers_merge(keep: str, remove: str, reason: str | None = None) -> dict[str, Any]:
+    """Merge confirmed duplicate `remove` into `keep`.
+
+    Fills missing ids/fields on `keep`, preserves `remove`'s provenance and
+    search links, keeps `remove` resolvable as an alias, and counts one more
+    "duplicate removed" in the PRISMA funnel. Refused when the two records
+    have conflicting screening decisions.
+    """
+    from saari import dedup
+
+    with db.connect(paths.db_path(paths.project_root())) as con:
+        return dedup.merge(con, keep, remove, reason=reason)
+
+
+@mcp.tool()
+def duplicates_dismiss(a: str, b: str, note: str | None = None) -> dict[str, Any]:
+    """Record that candidate pair `a` / `b` are distinct works (stops suggesting it)."""
+    from saari import dedup
+
+    with db.connect(paths.db_path(paths.project_root())) as con:
+        return dedup.dismiss(con, a, b, note=note)
+
+
+@mcp.tool()
+def paper_text(
+    paper_id: str,
+    offset: int = 0,
+    max_chars: int = 4000,
+    grep: str | None = None,
+    fetch: bool = True,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Read a paper's open-access full text, a bounded slice at a time.
+
+    First call downloads an OA copy (OA locations, PMC, arXiv; never
+    paywalled) and caches PDF + text under `.saaristo/fulltext/`; later
+    calls are offline. Returns metadata (`status`, `reason`, `n_chars`,
+    `n_pages`, `quality`, `source_url`, `source_version`, `text_path`) and:
+
+    - without `grep`: `text` = chars `[offset, offset+max_chars)` (cap
+      50000), `next_offset` (None at end), `page_start`/`page_end`;
+    - with `grep` (case-insensitive regex): `hits[]` of `{offset, page,
+      snippet}`; page to a hit with `offset`.
+
+    `status` is available | unavailable (no OA copy) | failed (with reason).
+    `quality`: good | low_text | garbled. `refresh` retries a recorded
+    failure. `fetch=false` reads only what is cached. Use after title/
+    abstract screening, on included/maybe papers.
+    """
+    from saari import fulltext as _ft
+
+    try:
+        return _ft.read_text(
+            paper_id, offset=offset, max_chars=max_chars, grep=grep,
+            fetch_if_missing=fetch, refresh=refresh, project_root=paths.project_root(),
+        )
+    except (KeyError, _ft.FulltextDependencyError) as e:
+        return {"paper_id": paper_id, "error": str(e).strip("'\"")}
+
+
+@mcp.tool()
+def fulltext_fetch(
+    status: str | None = "included",
+    refresh: bool = False,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Batch-fetch open-access full text for papers with screening `status`.
+
+    Default `included`; pass "maybe" for borderline papers, or null for all.
+    Already-recorded papers are skipped unless `refresh=True`. Returns
+    counts (`n_available`, `n_unavailable`, `n_failed`, `n_from_cache`)
+    plus `missing[]` with a reason per paper without full text. Synchronous
+    and polite (1 s per host), so batch a few dozen at a time with `limit`.
+    """
+    from saari import fulltext as _ft
+
+    try:
+        return _ft.fetch_many(
+            status=status, refresh=refresh, limit=limit, project_root=paths.project_root(),
+        )
+    except _ft.FulltextDependencyError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def searches_list(limit: int = 20) -> dict[str, Any]:
-    """List past searches and snowball events in this project."""
+    """Past searches and snowball events (source, query, n_returned, created_at).
+
+    Use to avoid repeating a phrasing and to report the search strategy.
+    """
     root = paths.project_root()
     with db.connect(paths.db_path(root)) as con:
         rows = db.list_searches(con, limit=limit)
@@ -326,16 +506,22 @@ def searches_list(limit: int = 20) -> dict[str, Any]:
 def snowball(
     paper_id: str,
     direction: str = "both",
-    max_per_direction: int = 25,
+    max_per_direction: int | None = None,
+    max_backward: int | None = None,
+    max_forward: int | None = 25,
+    max_records: int | None = None,
 ) -> dict[str, Any]:
-    """Expand a seed paper's citation neighbors into the project DB.
+    """Pull one seed paper's citation neighbors in as candidates.
 
-    - `backward`: papers the seed cites (from OpenAlex `referenced_works`)
-    - `forward`:  papers that cite the seed (via OpenAlex `cites:` filter)
-    - `both`:     both, up to `max_per_direction` each
+    `direction`: backward (papers it cites; all references by default,
+    `max_backward`) | forward (papers citing it; 25 by default,
+    `max_forward=None` = all up to `max_records`) | both.
+    `max_per_direction` is legacy and overrides both limits when set.
 
-    Often the single highest-leverage move after finding one good seed —
-    e.g. a survey paper gets you its whole bibliography in one call.
+    Returns counts + new ids, plus completeness per direction (`backward` /
+    `forward`: `n_available`, `n_retrieved`, `truncated`). A survey seed
+    yields its whole bibliography in one call. For all included papers use
+    `snowball_included`. Next: `refresh`, `triage`.
     """
     root = paths.project_root()
     r = _snowball(
@@ -343,6 +529,9 @@ def snowball(
         direction=direction,
         max_per_direction=max_per_direction,
         project_root=root,
+        max_backward=max_backward,
+        max_forward=max_forward,
+        max_records=max_records,
     )
     return {
         "seed": r.seed_paper_id,
@@ -352,16 +541,50 @@ def snowball(
         "backward_paper_ids": r.backward_paper_ids,
         "forward_paper_ids": r.forward_paper_ids,
         "skipped_reason": r.skipped_reason,
+        **r.completeness(),
     }
 
 
 @mcp.tool()
-def embed(only_missing: bool = True) -> dict[str, Any]:
-    """Embed papers in the project using sentence-transformers/all-MiniLM-L6-v2 (384-dim).
+def snowball_included(
+    top_n: int | None = None,
+    sort: str = "auto",
+    direction: str = "both",
+    max_backward: int | None = None,
+    max_forward: int | None = 25,
+    skip_done: bool = True,
+) -> dict[str, Any]:
+    """Snowball every included paper in one call (or the top `top_n` by
+    `sort`: auto | relevance | seen_in | cited, as in `triage`).
 
-    Local compute — no API cost. First invocation downloads ~80MB model.
-    Vectors persist in .saaristo/saari.db via sqlite-vec. Safe to call repeatedly
-    with only_missing=True (default).
+    `skip_done` (default) skips seeds already snowballed in this direction,
+    so re-running after each screening round snowballs only new includes.
+    Per seed: all references backward, `max_forward` citers forward (None =
+    all up to the safety cap); `n_truncated` counts seeds cut short.
+    Returns totals `{n_seeds, n_skipped_done, n_fetched, n_new, saturated}`,
+    per-seed rows, and per-seed `errors` (a bad seed does not stop the run).
+    `saturated`=true: this round found nothing new. Next: `refresh`, `triage`.
+    """
+    try:
+        return _snowball_seeds(
+            status="included",
+            top_n=top_n,
+            sort=sort,
+            direction=direction,
+            max_backward=max_backward,
+            max_forward=max_forward,
+            skip_done=skip_done,
+            project_root=paths.project_root(),
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
+def embed(only_missing: bool = True) -> dict[str, Any]:
+    """Embed papers locally (all-MiniLM-L6-v2, 384-dim; ~80MB model download
+    on first use). Idempotent with only_missing=True. Usually call `refresh`
+    instead, which also projects and redraws the canvas.
 
     Returns `{n_embedded, n_skipped, model, dim, elapsed_sec}`.
     """
@@ -382,13 +605,16 @@ def query(
     status: str | None = None,
     include_excerpt: bool = True,
 ) -> dict[str, Any]:
-    """Semantic search: rank papers by cosine similarity to the query text.
+    """Semantic search over the corpus: cards ranked by cosine `score`.
 
-    Requires `embed` to have been run. Scores are cosine similarity in [-1, 1];
-    higher is more similar. Post-filtering by status is applied after vector
-    retrieval — over-fetches 3x to compensate.
+    Write `text` as 2-3 sentences describing what a relevant paper says;
+    that works far better than keywords. Requires `refresh` (or `embed`)
+    after new papers arrive. `status` filters after a 3x over-fetch, so it
+    can return fewer than k; for "most relevant undecided" use
+    `triage(query=...)`, which scores every candidate.
 
-    Returns `{query, n, papers}` where each paper card includes a `score` field.
+    Returns `{query, n, papers}`; thin results on a relevant phrasing mean
+    `search` again with new terms.
     """
     root = paths.project_root()
     hits = _query_corpus(text, k=max(k * 3, k), project_root=root)
@@ -434,10 +660,9 @@ def papers_similar(
     status: str | None = None,
     include_excerpt: bool = True,
 ) -> dict[str, Any]:
-    """Find papers most similar to a seed paper (cosine over embeddings).
-
-    The seed must already be embedded. Returns ranked PaperCards, seed excluded.
-    Great after triaging a strong include — "find more like this".
+    """Find "more like this": papers nearest a seed paper's embedding, seed
+    excluded, each card with `score`. Seed must be embedded (`refresh`).
+    Good after a strong include; `status="candidate"` limits to undecided.
     """
     root = paths.project_root()
     try:
@@ -483,10 +708,10 @@ def project(
     n_neighbors: int = 15,
     min_dist: float = 0.1,
 ) -> dict[str, Any]:
-    """Project embedded papers to 2D (UMAP by default; numpy-SVD PCA fallback).
+    """Project embedded papers to 2D (UMAP; PCA fallback) for the canvas.
 
-    Persists to paper_projection. Prerequisite: `embed`.
-    Returns `{n_points, method, params, x_range, y_range}`.
+    Prerequisite: `embed`. Usually call `refresh` instead.
+    Returns `{n_points, method, params, x_range, y_range, note}`.
     """
     r = _project_corpus(
         method=method,
@@ -510,11 +735,10 @@ def canvas(
     status: str | None = None,
     out: str | None = None,
 ) -> dict[str, Any]:
-    """Render the corpus landscape as an Obsidian .canvas file and/or a standalone HTML viewer.
-
-    `format`: obsidian | html | both.
-    Prerequisite: `embed` + `project`. Artifacts default to `papers/landscape.*`.
-    HTML is self-contained (no external deps); open directly in a browser.
+    """Write the corpus map: Obsidian .canvas and/or self-contained HTML
+    (`format`: obsidian | html | both) to `papers/landscape.*`, for a human
+    to spot clusters and gaps. Prerequisite: embed + project (`refresh`
+    does all three). Returns the written paths and node counts.
     """
     root = paths.project_root()
     default_dir = paths.papers_dir(root)
@@ -538,12 +762,9 @@ def export_bibtex(
     status: str | None = "included",
     out: str | None = None,
 ) -> dict[str, Any]:
-    """Export papers to a BibTeX file for the manuscript.
-
-    Defaults to status='included' and writes to `papers/refs.bib`.
-    Citation keys follow `<firstauthorlastname><year><firsttitleword>`.
-    Abstracts longer than 1500 chars or containing publisher front-matter
-    noise markers are dropped from the entry (preserves a clean .bib file).
+    """Write BibTeX for citing from the draft (default: included papers to
+    `papers/refs.bib`; keys `<lastname><year><firstword>`). Noisy or very
+    long abstracts are dropped. Returns `{path, n_entries, format}`.
     """
     root = paths.project_root()
     target = Path(out) if out else paths.papers_dir(root) / "refs.bib"
@@ -553,10 +774,9 @@ def export_bibtex(
 
 @mcp.tool()
 def export_prisma(fmt: str = "svg", out: str | None = None) -> dict[str, Any]:
-    """Render the PRISMA 2020 flow diagram from the screening funnel.
-
-    `fmt`: 'svg' (default, self-contained) | 'mermaid'. Defaults to
-    `papers/prisma.svg`. Counts trace to the DB via `funnel()`.
+    """Write the PRISMA 2020 flow diagram (`fmt`: svg | mermaid; default
+    `papers/prisma.svg`). Counts trace to the DB (`funnel`). Already
+    included in `export_slr`. Returns `{path, n_entries, format}`.
     """
     root = paths.project_root()
     ext = "mmd" if fmt == "mermaid" else "svg"
@@ -567,12 +787,10 @@ def export_prisma(fmt: str = "svg", out: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def export_paper(out: str | None = None) -> dict[str, Any]:
-    """Assemble the Markdown SLR manuscript scaffold (default `papers/paper.md`).
-
-    Mechanical content (PRISMA counts, search-strategy table, study-characteristics
-    table, references, figures) is auto-filled and traceable; synthesis is left as
-    `<!-- WRITE -->` slots for a human/LLM. Also writes prisma.svg, landscape.svg,
-    refs.bib alongside. Set the protocol first with `study_set`.
+    """Write the Markdown SLR manuscript scaffold (default `papers/paper.md`)
+    plus prisma.svg, landscape.svg, refs.bib. Counts, tables, and references
+    trace to the DB; synthesis is left as `<!-- WRITE: -->` slots. Prefer
+    `export_slr` for the full bundle. Returns `{path, n_entries, format}`.
     """
     root = paths.project_root()
     target = Path(out) if out else paths.papers_dir(root) / "paper.md"
@@ -582,7 +800,9 @@ def export_paper(out: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def export_slides(out: str | None = None) -> dict[str, Any]:
-    """Assemble the Marp slide deck (default `papers/slides.md`)."""
+    """Write the Marp slide deck (default `papers/slides.md`). Already
+    included in `export_slr`. Returns `{path, n_entries, format}`.
+    """
     root = paths.project_root()
     target = Path(out) if out else paths.papers_dir(root) / "slides.md"
     r = _export_slides(target, project_root=root)
@@ -591,11 +811,10 @@ def export_slides(out: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def export_slr(out_dir: str | None = None) -> dict[str, Any]:
-    """One-shot: emit the full review bundle (paper + slides + PRISMA + figures + bib).
-
-    The headless entry point — turns a screened corpus into
-    `papers/review/{paper.md, slides.md, prisma.svg, prisma.mmd, landscape.svg,
-    refs.bib}`. Set the protocol (`study_set`) and screen papers first.
+    """Final step: write the full review bundle to `papers/review/` (paper.md,
+    slides.md, prisma.svg/.mmd, landscape.svg, refs.bib). Needs the protocol
+    set and papers screened. Then fill the `<!-- WRITE: -->` slots in
+    paper.md from included papers only. Returns `{path, n_entries, format}`.
     """
     root = paths.project_root()
     r = _export_slr(Path(out_dir) if out_dir else None, project_root=root)
@@ -604,10 +823,10 @@ def export_slr(out_dir: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def refresh() -> dict[str, Any]:
-    """One-shot: embed new papers, re-project, regenerate canvas artifacts.
+    """Embed new papers, re-project, and redraw the canvas in one call.
 
-    Use after `search` / `snowball` to bring the corpus landscape up to date.
-    Returns per-stage counts + artifact paths.
+    Call after every `search` / `snowball` round, before `query`, relevance
+    `triage`, or `papers_similar`. Returns per-stage counts + artifact paths.
     """
     root = paths.project_root()
     e = _embed_papers(only_missing=True, project_root=root)
@@ -639,10 +858,10 @@ def refresh() -> dict[str, Any]:
 
 @mcp.tool()
 def study_get() -> dict[str, Any]:
-    """Read the study metadata: research question, inclusion/exclusion criteria, tags.
+    """The review protocol: title, authors, research question, criteria, tags.
 
-    Stored at `.saaristo/study.json` and editable via `study_set`. Returns the full
-    shape with empty defaults so callers can render without null-checks.
+    Read it before screening so decisions cite the criteria. Empty strings
+    mean unset; set with `study_set`.
     """
     return _study.get(project_root=paths.project_root())
 
@@ -655,7 +874,9 @@ def study_set(
     criteria: str | None = None,
     tags: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Set / patch study metadata. Only fields you pass change.
+    """Set / patch the review protocol. Do this before the first `search`.
+    Only fields you pass change. `question` + `criteria` also drive the
+    relevance sort in `triage`.
 
     - `title`: manuscript title (used by `export_paper`).
     - `authors`: author line (free text).
@@ -677,10 +898,9 @@ def study_set(
 
 @mcp.tool()
 def funnel() -> dict[str, Any]:
-    """Return PRISMA-style aggregate: searches, fetched, unique, screened.
-
-    Use to summarize review progress in narrative or to render a flow diagram.
-    Includes per-search rows and per-status counts.
+    """PRISMA-style counts: searches, records fetched, unique, screened, by
+    status, embedded/projected, plus per-search rows. Use for progress
+    summaries and to check `export_slr` numbers.
     """
     return _study.funnel(project_root=paths.project_root())
 
@@ -704,6 +924,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=3045)
     args = parser.parse_args()
+
+    from saari import log
+
+    # stderr/file only: in stdio mode stdout carries the JSON-RPC stream.
+    log.setup(propagate=False)
 
     if not args.http:
         mcp.run()

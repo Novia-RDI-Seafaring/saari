@@ -37,6 +37,22 @@ app.add_typer(searches_app, name="searches")
 console = Console()
 
 
+@app.callback()
+def _main(
+    verbose: Annotated[
+        int,
+        typer.Option(
+            "--verbose", "-v", count=True,
+            help="Log to stderr: -v for INFO, -vv for DEBUG (default: SAARI_LOG_LEVEL or WARNING).",
+        ),
+    ] = 0,
+) -> None:
+    """Global options, applied before any subcommand."""
+    from saari import log
+
+    log.setup(log.verbosity_to_level(verbose))
+
+
 class OutputFormat(str, Enum):
     table = "table"
     cards = "cards"
@@ -80,7 +96,7 @@ def serve(
     """Boot the saari HTTP server (REST API + SPA) on PORT.
 
     Serves the built UI at the root if `ui/dist/` exists, otherwise just the
-    API. For UI development run `cd ui && npm run dev` in a second terminal —
+    API. For UI development run `cd ui && pnpm dev` in a second terminal —
     Vite proxies `/api` to this server.
     """
     import threading
@@ -197,24 +213,43 @@ def refresh() -> None:
 @app.command()
 def search(
     query: Annotated[str, typer.Argument(help="Search query")],
-    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results")] = 25,
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Max results (pages past 100)")] = 25,
     year_from: Annotated[int | None, typer.Option("--year-from")] = None,
     year_to: Annotated[int | None, typer.Option("--year-to")] = None,
     source: Annotated[
-        str, typer.Option("--source", "-s", help="openalex | scopus")
+        str, typer.Option("--source", "-s", help="openalex | scopus | crossref")
     ] = "openalex",
+    scope: Annotated[
+        str,
+        typer.Option("--scope", help="all (incl. full text) | title_abstract"),
+    ] = "all",
+    fetch_all: Annotated[
+        bool,
+        typer.Option("--all", help="Fetch every matching record (refuses above --max-records)"),
+    ] = False,
+    max_records: Annotated[
+        int | None,
+        typer.Option("--max-records", help="Safety cap (default SAARI_SEARCH_MAX_RECORDS or 2000)"),
+    ] = None,
 ) -> None:
     """Search a bibliographic source and persist results into the current project.
 
-    Scopus needs SCOPUS_API_KEY (and, off a registered institutional
-    network, SCOPUS_INST_TOKEN). Results found by both sources are
-    deduplicated by DOI.
+    Reports how many records the source has in total, so a sample is never
+    mistaken for the full result set. Scopus needs SCOPUS_API_KEY (and, off
+    a registered institutional network, SCOPUS_INST_TOKEN). Crossref is
+    keyless (set CROSSREF_MAILTO for the polite pool). Results found by
+    several sources are deduplicated by DOI / PMID / arXiv id.
     """
     from saari.sources import run_search
+    from saari.sources.crossref import CrossrefError
+    from saari.sources.openalex import OpenAlexError
     from saari.sources.scopus import ScopusError
 
     root = _resolve_root()
-    console.print(f"[dim]{source} search:[/] {query!r}  limit={limit}  @ {root}")
+    console.print(
+        f"[dim]{source} search:[/] {query!r}  "
+        f"{'all' if fetch_all else f'limit={limit}'}  scope={scope}  @ {root}"
+    )
     try:
         result = run_search(
             query,
@@ -223,19 +258,29 @@ def search(
             year_from=year_from,
             year_to=year_to,
             project_root=root,
+            scope=scope,
+            fetch_all=fetch_all,
+            max_records=max_records,
         )
-    except (ValueError, ScopusError) as e:
+    except (ValueError, ScopusError, OpenAlexError, CrossrefError) as e:
         console.print(f"[red]error:[/] {e}")
         raise typer.Exit(2) from None
-    if result["n_fetched"] == 0:
-        console.print("[yellow]No results.[/]")
-        return
-
+    avail = result["n_available"]
     console.print(
-        f"[green]Persisted[/] {result['n_fetched']} papers "
+        f"[green]Retrieved {result['n_fetched']} of "
+        f"{avail if avail is not None else 'unknown'} available[/] "
         f"(search #{result['search_id']}, new={result['n_new']}, "
         f"duplicate={result['n_duplicate']})"
     )
+    if result["truncated"]:
+        console.print(
+            "[yellow]note:[/] this is a sample, not the full result set. "
+            "Use --all (or a higher --limit) to retrieve everything, or narrow the query."
+        )
+    for note in result.get("notes") or []:
+        console.print(f"[yellow]note:[/] {note}")
+    if result["n_fetched"] == 0:
+        return
     with db.connect(paths.db_path(root)) as con:
         papers = [p for pid in result["paper_ids"] if (p := db.get_paper(con, pid))]
     _print_paper_table(papers)
@@ -245,12 +290,27 @@ def search(
 def snowball(
     paper_id: Annotated[str, typer.Argument(help="Seed paper id (openalex:Wxxx, DOI, arxiv, or PMID)")],
     direction: Annotated[str, typer.Option("--direction", "-d", help="backward | forward | both")] = "both",
-    max_per_direction: Annotated[int, typer.Option("--max", "-n", help="Max papers per direction")] = 25,
+    max_per_direction: Annotated[
+        int | None, typer.Option("--max", "-n", help="Legacy: max papers in each direction")
+    ] = None,
+    max_backward: Annotated[
+        int | None, typer.Option("--max-backward", help="Max references (default: all)")
+    ] = None,
+    max_forward: Annotated[
+        int, typer.Option("--max-forward", help="Max citing works (default 25)")
+    ] = 25,
+    all_forward: Annotated[
+        bool, typer.Option("--all-forward", help="Fetch all citing works (up to --max-records)")
+    ] = False,
+    max_records: Annotated[
+        int | None,
+        typer.Option("--max-records", help="Safety cap (default SAARI_SEARCH_MAX_RECORDS or 2000)"),
+    ] = None,
 ) -> None:
     """Expand a seed paper's citation neighbors into the project.
 
-    backward: papers this one cites (via OpenAlex `referenced_works`)
-    forward:  papers that cite this one (via OpenAlex `cites:` filter)
+    backward: papers this one cites (via OpenAlex `referenced_works`), all by default
+    forward:  papers that cite this one (via OpenAlex `cites:` filter), 25 by default
     """
     root = _resolve_root()
     result = _snowball(
@@ -258,6 +318,9 @@ def snowball(
         direction=direction,
         max_per_direction=max_per_direction,
         project_root=root,
+        max_backward=max_backward,
+        max_forward=None if all_forward else max_forward,
+        max_records=max_records,
     )
     console.print(
         f"[green]Snowball {result.direction}[/] from {result.seed_paper_id}: "
@@ -265,8 +328,75 @@ def snowball(
         f"([cyan]backward={len(result.backward_paper_ids)}[/] / "
         f"[magenta]forward={len(result.forward_paper_ids)}[/])"
     )
+    for name, st in (("backward", result.backward), ("forward", result.forward)):
+        if st is None:
+            continue
+        avail = st.n_available if st.n_available is not None else "unknown"
+        flag = " [yellow](truncated)[/]" if st.truncated else ""
+        console.print(f"  {name}: retrieved {st.n_retrieved} of {avail} available{flag}")
+        if st.note:
+            console.print(f"  [yellow]note:[/] {st.note}")
     if result.skipped_reason:
         console.print(f"[yellow]note:[/] {result.skipped_reason}")
+
+
+@app.command("snowball-included")
+def snowball_included(
+    top_n: Annotated[int | None, typer.Option("--top", help="Only the top N seeds by --sort")] = None,
+    sort: Annotated[str, typer.Option("--sort", help="auto | relevance | seen_in | cited")] = "auto",
+    direction: Annotated[str, typer.Option("--direction", "-d", help="backward | forward | both")] = "both",
+    max_backward: Annotated[
+        int | None, typer.Option("--max-backward", help="References per seed (default: all)")
+    ] = None,
+    max_forward: Annotated[
+        int, typer.Option("--max-forward", "-n", help="Citing works per seed")
+    ] = 25,
+    all_forward: Annotated[
+        bool, typer.Option("--all-forward", help="All citing works per seed, up to the safety cap")
+    ] = False,
+    skip_done: Annotated[
+        bool, typer.Option("--skip-done/--redo", help="Skip seeds already snowballed this direction")
+    ] = True,
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f", help="md | json")] = OutputFormat.md,
+) -> None:
+    """Snowball every included paper (or the top N) in one run.
+
+    Calls `snowball` per seed and totals the counts. With --skip-done (the
+    default), re-running after each screening round only snowballs new
+    includes; a round with zero new papers is saturation.
+    """
+    from saari.snowball_batch import snowball_seeds
+
+    root = _resolve_root()
+    try:
+        r = snowball_seeds(
+            top_n=top_n,
+            sort=sort,
+            direction=direction,
+            max_backward=max_backward,
+            max_forward=None if all_forward else max_forward,
+            skip_done=skip_done,
+            project_root=root,
+        )
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    if fmt is OutputFormat.json:
+        console.print_json(data=r)
+        return
+    console.print(
+        f"[green]Snowball {r['direction']}[/] from {r['n_seeds']} included seed(s): "
+        f"fetched={r['n_fetched']}, new={r['n_new']}, "
+        f"skipped(done)={r['n_skipped_done']}, errors={r['n_errors']}"
+    )
+    for row in r["seeds"]:
+        console.print(f"  {row.get('seed')}: fetched={row.get('n_fetched')} new={row.get('n_new')}")
+    for err in r["errors"]:
+        console.print(f"  [red]{err['seed']}[/]: {err['error']}")
+    if r.get("note"):
+        console.print(f"[yellow]note:[/] {r['note']}")
+    if r["saturated"]:
+        console.print("[green]Saturated:[/] this round found nothing new.")
 
 
 @app.command()
@@ -462,51 +592,110 @@ def screen(
 @app.command()
 def triage(
     limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    sort: Annotated[
+        str, typer.Option("--sort", help="auto | relevance | seen_in | cited")
+    ] = "auto",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Rank by relevance to this text instead of the protocol"),
+    ] = None,
     min_citations: Annotated[int | None, typer.Option("--min-citations", "-c")] = None,
     year_from: Annotated[int | None, typer.Option("--year-from")] = None,
+    seen_in_at_least: Annotated[int | None, typer.Option("--seen-in-at-least")] = None,
     fmt: Annotated[OutputFormat, typer.Option("--format", "-f", help="Output format")] = OutputFormat.md,
 ) -> None:
     """Show the top undecided (candidate) papers as a triage checklist.
 
-    Default output is markdown: one paper per block with `[ ]` checkbox,
-    title, meta, seen_in count, and abstract excerpt. Designed to be
-    scannable by agents and humans, and easy to paste into chat.
-    Once you decide, run `saari screen <id> include|exclude [--note ...]`.
+    Sort: `relevance` ranks by semantic similarity to --query, else to the
+    study protocol (needs embeddings: `saari refresh`); `seen_in` by search
+    overlap; `cited` by citations. `auto` (default) uses relevance when it
+    can, else seen_in. Then: `saari screen <id> include|exclude --note ...`.
     """
+    from saari.triage import rank_papers
+
     root = _resolve_root()
-    with db.connect(paths.db_path(root)) as con:
-        counts = db.count_by_status(con)
-        papers = db.list_papers(
-            con,
-            limit=limit,
+    try:
+        r = rank_papers(
             status="candidate",
+            sort=sort,
+            query=query,
+            limit=limit,
             min_citations=min_citations,
             year_from=year_from,
-            order_by="COALESCE(cited_by_count, 0) DESC",
+            seen_in_at_least=seen_in_at_least,
+            project_root=root,
         )
-    n_candidates = counts.get("candidate", 0)
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    papers = r.papers
+    scores = r.scores if r.sort == "relevance" else {}
+    with db.connect(paths.db_path(root)) as con:
+        n_candidates = db.count_by_status(con).get("candidate", 0)
 
     if fmt is OutputFormat.json:
-        console.print_json(
-            data={
-                "n_candidates": n_candidates,
-                "limit": limit,
-                "papers": [_paper_card_dict(p) for p in papers],
-            }
-        )
+        data = {
+            "n_candidates": n_candidates,
+            "n_matching": r.n_matching,
+            "limit": limit,
+            "sort": r.sort,
+            "basis": r.basis,
+            "papers": [
+                {**_paper_card_dict(p), **({"score": scores.get(p.id)} if scores else {})}
+                for p in papers
+            ],
+        }
+        if r.note:
+            data["note"] = r.note
+        console.print_json(data=data)
         return
 
     if fmt is OutputFormat.md:
-        print(_render_md_triage(papers, n_candidates, limit))
+        print(_render_md_triage(papers, n_candidates, limit, scores=scores, sort_label=_sort_label(r)))
+        if r.note:
+            print(f"\nnote: {r.note}")
         return
 
     console.print(
-        f"[bold]Triage[/] — showing {len(papers)} of {n_candidates} candidates"
+        f"[bold]Triage[/] - showing {len(papers)} of {n_candidates} candidates ({_sort_label(r)})"
     )
+    if r.note:
+        console.print(f"[yellow]note:[/] {r.note}")
     if fmt is OutputFormat.cards:
         _print_paper_cards(papers)
     else:
         _print_paper_table(papers)
+
+
+def _sort_label(r) -> str:
+    return f"sort={r.sort}" + (f" vs {r.basis}" if r.basis else "")
+
+
+@app.command()
+def guide(
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f", help="md | json")] = OutputFormat.md,
+) -> None:
+    """Workflow map: stages in order, tools per stage, prerequisites, next step.
+
+    Same data as the `guide` MCP tool. Works outside a project too (then the
+    next step is `saari init`).
+    """
+    from saari.guide import guide_data
+
+    data = guide_data()
+    if fmt is OutputFormat.json:
+        console.print_json(data=data)
+        return
+    lines = ["## saari workflow", ""]
+    for i, st in enumerate(data["pipeline"], 1):
+        state = f" [{st['state']}: {st['detail']}]" if "state" in st else ""
+        lines.append(f"{i}. **{st['key']}**{state} - {st['do']}")
+        lines.append(f"   cli: `{st['cli']}`  mcp: {', '.join(st['tools'])}")
+    lines += ["", "### requires"]
+    lines += [f"- {k}: {v}" for k, v in data["requires"].items()]
+    nxt = data["next"]
+    lines += ["", f"**next:** `{nxt['tool']}` - {nxt['why']}"]
+    print("\n".join(lines))
 
 
 @papers_app.command("list")
@@ -725,6 +914,181 @@ def papers_raw(
     console.print(full.read_text())
 
 
+@papers_app.command("add")
+def papers_add(
+    identifiers: Annotated[
+        list[str],
+        typer.Argument(help="DOI, doi.org URL, arXiv id/URL, pmid:<n> / PubMed URL, or OpenAlex id/URL"),
+    ],
+    note: Annotated[str | None, typer.Option("--note", help="Where these came from (e.g. 'expert suggestion')")] = None,
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f")] = OutputFormat.table,
+) -> None:
+    """Add papers you already know, by identifier.
+
+    Resolved via OpenAlex (Crossref as fallback for DOIs). Recorded as one
+    'manual' identification event, which PRISMA reports under other methods.
+    """
+    from saari.sources import add_papers
+
+    root = _resolve_root()
+    result = add_papers(identifiers, note=note, project_root=root)
+    if fmt is OutputFormat.json:
+        console.print_json(data=result)
+    else:
+        for r in result["results"]:
+            colour = {"added": "green", "duplicate": "yellow"}.get(r["status"], "red")
+            detail = r.get("paper_id") or r.get("error") or ""
+            via = f" [dim]via {r['resolved_via']}[/]" if r.get("resolved_via") else ""
+            console.print(f"[{colour}]{r['status']:<9}[/] {r['input']}  {detail}{via}")
+        console.print(
+            f"[dim]manual event #{result['search_id']}: new={result['n_new']} "
+            f"duplicate={result['n_duplicate']} failed={result['n_failed']}[/]"
+        )
+    if result["n_failed"] and not result["paper_ids"]:
+        raise typer.Exit(1)
+
+
+@papers_app.command("duplicates")
+def papers_duplicates(
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f")] = OutputFormat.table,
+) -> None:
+    """List candidate duplicate pairs for review (nothing is merged automatically)."""
+    from saari import dedup
+
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        cands = dedup.find_candidates(con)
+    if fmt is OutputFormat.json:
+        console.print_json(data={"candidates": cands})
+        return
+    if not cands:
+        console.print("[green]No candidate duplicates.[/]")
+        return
+    for c in cands:
+        console.print(f"[bold]{c['confidence']}[/]  {', '.join(c['signals'])}  [dim]suggested keep: {c['suggested_keep']}[/]")
+        for p in c["papers"]:
+            console.print(f"    {p['id']}  ({p['year'] or 'n.d.'}, {p['status']})  {p['title']}  [dim]{p['doi'] or ''}[/]")
+    console.print(
+        "[dim]Resolve with `saari papers merge KEEP REMOVE` or "
+        "`saari papers not-duplicate A B`.[/]"
+    )
+
+
+@papers_app.command("merge")
+def papers_merge(
+    keep: Annotated[str, typer.Argument(help="Record to keep (id, DOI, arxiv, PMID)")],
+    remove: Annotated[str, typer.Argument(help="Duplicate record to fold into KEEP")],
+    reason: Annotated[str | None, typer.Option("--reason", help="Why these are the same work")] = None,
+) -> None:
+    """Merge a confirmed duplicate into another record (counts as a duplicate removed in PRISMA)."""
+    from saari import dedup
+
+    root = _resolve_root()
+    try:
+        with db.connect(paths.db_path(root)) as con:
+            r = dedup.merge(con, keep, remove, reason=reason)
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    console.print(f"[green]Merged[/] {r['removed_id']} into {r['kept_id']} ({', '.join(r['signals']) or 'no signals'})")
+
+
+@papers_app.command("not-duplicate")
+def papers_not_duplicate(
+    a: Annotated[str, typer.Argument(help="First record")],
+    b: Annotated[str, typer.Argument(help="Second record")],
+    note: Annotated[str | None, typer.Option("--note")] = None,
+) -> None:
+    """Mark a candidate pair as distinct works so it is no longer suggested."""
+    from saari import dedup
+
+    root = _resolve_root()
+    try:
+        with db.connect(paths.db_path(root)) as con:
+            r = dedup.dismiss(con, a, b, note=note)
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    console.print(f"[green]Marked distinct:[/] {r['a']} / {r['b']}")
+
+
+@papers_app.command("text")
+def papers_text(
+    paper_id: Annotated[str, typer.Argument(help="Paper id, DOI, arxiv ID, or PMID")],
+    offset: Annotated[int, typer.Option("--offset", help="Start character")] = 0,
+    max_chars: Annotated[int, typer.Option("--max-chars", "-n", help="Slice length (cap 50000)")] = 4000,
+    grep: Annotated[str | None, typer.Option("--grep", "-g", help="Case-insensitive regex; show hits")] = None,
+    fetch: Annotated[bool, typer.Option("--fetch/--no-fetch", help="Download if not cached")] = True,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Re-try / re-download")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="Print the full JSON response")] = False,
+) -> None:
+    """Read a paper's open-access full text (fetched once, cached in .saaristo/fulltext/)."""
+    from saari import fulltext as _ft
+
+    root = _resolve_root()
+    try:
+        r = _ft.read_text(
+            paper_id, offset=offset, max_chars=max_chars, grep=grep,
+            fetch_if_missing=fetch, refresh=refresh, project_root=root,
+        )
+    except KeyError:
+        console.print(f"[red]Not found:[/] {paper_id}")
+        raise typer.Exit(1) from None
+    except _ft.FulltextDependencyError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    if as_json:
+        console.print_json(data=r)
+        return
+    if r.get("status") != _ft.STATUS_AVAILABLE:
+        console.print(f"[yellow]{r.get('status') or 'not fetched'}:[/] {r.get('reason')}")
+        for a in r.get("attempts") or []:
+            console.print(f"  [dim]{a['kind']}  {a['url']}  {a.get('error', 'ok')}[/]")
+        raise typer.Exit(1)
+    console.print(
+        f"[dim]{r['n_chars']} chars, {r['n_pages']} pages, quality={r['quality']}, "
+        f"source={r['source_url']}[/]"
+    )
+    if grep:
+        console.print(f"[dim]{r['n_hits']} hit(s) for {grep!r}[/]")
+        for h in r["hits"]:
+            console.print(f"p{h['page']} @{h['offset']}  {h['snippet']}", markup=False, highlight=False)
+        return
+    console.print(r["text"], markup=False, highlight=False)
+    if r["next_offset"] is not None:
+        console.print(f"[dim]... more: --offset {r['next_offset']}[/]")
+
+
+fulltext_app = typer.Typer(help="Open-access full text for screened papers", no_args_is_help=True)
+app.add_typer(fulltext_app, name="fulltext")
+
+
+@fulltext_app.command("fetch")
+def fulltext_fetch_cmd(
+    status: Annotated[str, typer.Option("--status", help="Screening status, or 'all'")] = "included",
+    refresh: Annotated[bool, typer.Option("--refresh", help="Retry papers already recorded")] = False,
+    limit: Annotated[int | None, typer.Option("--limit", "-n")] = None,
+) -> None:
+    """Fetch OA full text for every paper with a status (default: included)."""
+    from saari import fulltext as _ft
+
+    root = _resolve_root()
+    try:
+        r = _ft.fetch_many(
+            status=None if status == "all" else db.normalize_status(status),
+            refresh=refresh, limit=limit, project_root=root,
+        )
+    except _ft.FulltextDependencyError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    console.print(
+        f"[green]{r['n_available']}[/] of {r['n_papers']} {status} papers have full text  "
+        f"unavailable={r['n_unavailable']}  failed={r['n_failed']}  from_cache={r['n_from_cache']}"
+    )
+    for m in r["missing"]:
+        console.print(f"  [yellow]{m['status']}[/] {m['paper_id']}  [dim]{m['reason']}[/]")
+
+
 export_app = typer.Typer(help="Compile the corpus into manuscript-ready formats", no_args_is_help=True)
 app.add_typer(export_app, name="export")
 
@@ -837,13 +1201,19 @@ def searches_list(
     t.add_column("source")
     t.add_column("query")
     t.add_column("n")
+    t.add_column("of")
     t.add_column("created_at")
     for r in rows:
+        avail = r.get("n_available")
+        of = "?" if avail is None else str(avail)
+        if r.get("truncated"):
+            of += " (truncated)"
         t.add_row(
             str(r["id"]),
             r["source"],
             r["query"],
             str(r["n_returned"]),
+            of,
             r["created_at"],
         )
     console.print(t)
@@ -896,9 +1266,13 @@ def _render_md_triage(
     n_candidates: int,
     limit: int,
     heading: str = "Triage",
+    scores: dict[str, float | None] | None = None,
+    sort_label: str | None = None,
 ) -> str:
+    scores = scores or {}
     lines: list[str] = []
-    lines.append(f"## {heading} — {len(papers)} of {n_candidates} shown")
+    suffix = f" ({sort_label})" if sort_label else ""
+    lines.append(f"## {heading} — {len(papers)} of {n_candidates} shown{suffix}")
     lines.append("")
     for p in papers:
         meta_bits = []
@@ -912,6 +1286,9 @@ def _render_md_triage(
         flags = _paper_flags(p)
         flag_str = f"  ·  flags: {' '.join(flags)}" if flags else ""
         seen = f"  ·  seen_in={p.seen_in}" if p.seen_in > 1 else ""
+        if p.id in scores:
+            sc = scores[p.id]
+            meta = f"score={sc:+.3f}, {meta}" if sc is not None else f"score=n/a, {meta}"
         lines.append(f"- [ ] `{p.id}` — **{p.title}**  ({meta}){seen}{flag_str}")
         excerpt = _abstract_excerpt(p.abstract)
         if excerpt:

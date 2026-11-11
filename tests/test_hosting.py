@@ -124,8 +124,10 @@ def test_mailto_from_identity_opt_in(tmp_path, monkeypatch):
     """With the flag on, the middleware binds the caller's email for OpenAlex
     polite-pool attribution; with it off (default), it never does."""
     from saari.hosting import RequestRootMiddleware
-    from saari.sources.openalex import DEFAULT_MAILTO, _resolve_mailto
+    from saari.sources.openalex import _resolve_mailto
 
+    operator = "ops@example.org"
+    monkeypatch.setenv("OPENALEX_MAILTO", operator)
     monkeypatch.setenv("SAARI_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("SAARI_MAILTO_FROM_IDENTITY", "1")
 
@@ -148,7 +150,7 @@ def test_mailto_from_identity_opt_in(tmp_path, monkeypatch):
         "/x",
         headers={"x-saari-user": "alice", "x-ms-client-principal-name": "not-an-email"},
     )
-    assert seen[-1] == DEFAULT_MAILTO
+    assert seen[-1] == operator
 
     # flag off: identity email is ignored even when present
     monkeypatch.delenv("SAARI_MAILTO_FROM_IDENTITY")
@@ -156,12 +158,18 @@ def test_mailto_from_identity_opt_in(tmp_path, monkeypatch):
         "/x",
         headers={"x-saari-user": "alice", "x-ms-client-principal-name": "alice@novia.fi"},
     )
-    assert seen[-1] == DEFAULT_MAILTO
+    assert seen[-1] == operator
 
 
-def test_mailto_unbound_outside_requests():
+def test_mailto_unbound_outside_requests(monkeypatch):
     from saari import hosting
-    from saari.sources.openalex import DEFAULT_MAILTO, _resolve_mailto
+    from saari.sources.openalex import _auth_params, _resolve_mailto
 
+    monkeypatch.delenv("OPENALEX_MAILTO", raising=False)
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
     assert hosting.request_mailto() is None
-    assert _resolve_mailto() == DEFAULT_MAILTO
+    # No personal / operator default baked into the code: nothing is sent.
+    assert _resolve_mailto() is None
+    assert _auth_params() == {}
+    monkeypatch.setenv("OPENALEX_MAILTO", "ops@example.org")
+    assert _resolve_mailto() == "ops@example.org"

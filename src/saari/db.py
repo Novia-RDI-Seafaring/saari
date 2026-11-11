@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import sqlite_vec
 
@@ -48,6 +49,8 @@ CREATE TABLE IF NOT EXISTS search (
     query TEXT NOT NULL,
     params_json TEXT NOT NULL DEFAULT '{}',
     n_returned INTEGER,
+    n_available INTEGER,
+    truncated INTEGER,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -59,6 +62,31 @@ CREATE TABLE IF NOT EXISTS search_result (
 );
 
 CREATE INDEX IF NOT EXISTS idx_search_result_paper ON search_result(paper_id);
+
+-- Reviewer-confirmed duplicate merges. `removed_id` survives as an alias of
+-- `kept_id`: lookups, later searches and snowballs resolve to the kept row.
+CREATE TABLE IF NOT EXISTS paper_merge (
+    removed_id TEXT PRIMARY KEY,
+    kept_id TEXT NOT NULL,
+    reason TEXT,
+    signals_json TEXT NOT NULL DEFAULT '[]',
+    -- 1 when the merge folded in a record that entered outside any recorded
+    -- search, so PRISMA's "other" identification count stays exact.
+    absorbed_unlinked INTEGER NOT NULL DEFAULT 0,
+    removed_json TEXT NOT NULL DEFAULT '{}',
+    merged_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_paper_merge_kept ON paper_merge(kept_id);
+
+-- Candidate pairs a reviewer judged NOT to be duplicates (a < b).
+CREATE TABLE IF NOT EXISTS paper_not_duplicate (
+    a TEXT NOT NULL,
+    b TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (a, b)
+);
 
 CREATE TABLE IF NOT EXISTS paper_embedding_meta (
     paper_id TEXT PRIMARY KEY REFERENCES paper(id) ON DELETE CASCADE,
@@ -74,6 +102,25 @@ CREATE TABLE IF NOT EXISTS paper_projection (
     method TEXT NOT NULL,
     params_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Open-access full-text retrieval state (see fulltext.py). One row per
+-- attempted paper. status: available | unavailable | failed.
+CREATE TABLE IF NOT EXISTS paper_fulltext (
+    paper_id TEXT PRIMARY KEY REFERENCES paper(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    reason TEXT,
+    source_url TEXT,
+    source_kind TEXT,
+    source_version TEXT,
+    pdf_path TEXT,
+    text_path TEXT,
+    n_chars INTEGER,
+    n_pages INTEGER,
+    quality TEXT,
+    sha256 TEXT,
+    attempts_json TEXT NOT NULL DEFAULT '[]',
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
@@ -100,6 +147,13 @@ _PAPER_COLUMNS = [
     ("screening_note", "TEXT"),
 ]
 
+# Completeness metadata on search events. NULL on rows recorded before
+# saari tracked it: the source total is then unknown, not zero.
+_SEARCH_COLUMNS = [
+    ("n_available", "INTEGER"),
+    ("truncated", "INTEGER"),
+]
+
 _VALID_STATUSES = {"candidate", "included", "excluded", "maybe"}
 _STATUS_ALIASES = {
     "include": "included",
@@ -123,6 +177,10 @@ def _migrate(con: sqlite3.Connection) -> None:
     for name, defn in _PAPER_COLUMNS:
         if name not in existing:
             con.execute(f"ALTER TABLE paper ADD COLUMN {name} {defn}")
+    existing = {row["name"] for row in con.execute("PRAGMA table_info(search)")}
+    for name, defn in _SEARCH_COLUMNS:
+        if name not in existing:
+            con.execute(f"ALTER TABLE search ADD COLUMN {name} {defn}")
 
 
 @contextmanager
@@ -200,9 +258,25 @@ def count_embedded(con: sqlite3.Connection) -> int:
     return int(row["n"]) if row else 0
 
 
+def canonical_id(con: sqlite3.Connection, paper_id: str) -> str:
+    """Follow a merge alias to the kept paper id (identity if not merged)."""
+    row = con.execute(
+        "SELECT kept_id FROM paper_merge WHERE removed_id = ?", (paper_id,)
+    ).fetchone()
+    return row["kept_id"] if row else paper_id
+
+
 def upsert_paper(
     con: sqlite3.Connection, paper: Paper, raw_path: str | None = None
 ) -> None:
+    """Insert or refresh a paper row.
+
+    A paper whose id was merged away into another record is not re-inserted
+    (that would resurrect a resolved duplicate); the call is a no-op and
+    `record_search` links the event to the kept record instead.
+    """
+    if canonical_id(con, paper.id) != paper.id:
+        return
     authors_json = json.dumps([a.model_dump() for a in paper.authors])
     locations_json = json.dumps([loc.model_dump() for loc in paper.locations])
     refs_json = json.dumps(paper.referenced_works)
@@ -264,10 +338,36 @@ def record_search(
     query: str,
     params: dict,
     paper_ids: list[str],
+    n_available: int | None = None,
+    truncated: bool | None = None,
 ) -> int:
+    """Record a search / snowball event.
+
+    `n_available` is the source's total for the query and `truncated`
+    whether fewer were retrieved; None means unknown (not zero / not false).
+    """
+    n_returned = len(paper_ids)
+    # Merged-away ids resolve to the kept record. `n_returned` keeps the raw
+    # count: those are records the source returned, duplicates included.
+    seen: set[str] = set()
+    canonical: list[str] = []
+    for pid in paper_ids:
+        cid = canonical_id(con, pid)
+        if cid not in seen:
+            seen.add(cid)
+            canonical.append(cid)
+    paper_ids = canonical
     cur = con.execute(
-        "INSERT INTO search (source, query, params_json, n_returned) VALUES (?, ?, ?, ?)",
-        (source, query, json.dumps(params), len(paper_ids)),
+        "INSERT INTO search (source, query, params_json, n_returned, n_available, truncated) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            source,
+            query,
+            json.dumps(params),
+            n_returned,
+            n_available,
+            None if truncated is None else int(bool(truncated)),
+        ),
     )
     search_id = int(cur.lastrowid or 0)
     con.executemany(
@@ -367,10 +467,15 @@ def list_papers(
 
 
 def get_paper(con: sqlite3.Connection, paper_id: str) -> Paper | None:
+    """Look up by id, DOI, arXiv id or PMID; a merged-away id resolves to the kept record."""
     row = con.execute(
         _LIST_SELECT + " WHERE p.id = ? OR p.doi = ? OR p.arxiv_id = ? OR p.pmid = ?",
         (paper_id, paper_id, paper_id, paper_id),
     ).fetchone()
+    if row is None:
+        kept = canonical_id(con, paper_id)
+        if kept != paper_id:
+            row = con.execute(_LIST_SELECT + " WHERE p.id = ?", (kept,)).fetchone()
     return _row_to_paper(row) if row else None
 
 
