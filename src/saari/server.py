@@ -136,6 +136,23 @@ class SearchIn(BaseModel):
     max_records: int | None = None
 
 
+class PaperAddIn(BaseModel):
+    identifiers: list[str]
+    note: str | None = None
+
+
+class MergeIn(BaseModel):
+    keep: str
+    remove: str
+    reason: str | None = None
+
+
+class DismissIn(BaseModel):
+    a: str
+    b: str
+    note: str | None = None
+
+
 class QueryIn(BaseModel):
     text: str
     k: int = 20
@@ -320,6 +337,39 @@ def create_app() -> FastAPI:
             "papers": [_to_card(p).model_dump() for p in papers],
         }
 
+    @app.post("/api/papers")
+    def papers_add(body: PaperAddIn) -> dict[str, Any]:
+        from saari.sources import add_papers
+
+        return add_papers(body.identifiers, note=body.note, project_root=paths.project_root())
+
+    @app.get("/api/duplicates")
+    def duplicates_list() -> dict[str, Any]:
+        from saari import dedup
+
+        with db.connect(paths.db_path(paths.project_root())) as con:
+            return {"candidates": dedup.find_candidates(con)}
+
+    @app.post("/api/duplicates/merge")
+    def duplicates_merge(body: MergeIn) -> dict[str, Any]:
+        from saari import dedup
+
+        try:
+            with db.connect(paths.db_path(paths.project_root())) as con:
+                return dedup.merge(con, body.keep, body.remove, reason=body.reason)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
+    @app.post("/api/duplicates/dismiss")
+    def duplicates_dismiss(body: DismissIn) -> dict[str, Any]:
+        from saari import dedup
+
+        try:
+            with db.connect(paths.db_path(paths.project_root())) as con:
+                return dedup.dismiss(con, body.a, body.b, note=body.note)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+
     @app.get("/api/papers/{paper_id:path}")
     def get_paper(paper_id: str) -> dict[str, Any]:
         root = paths.project_root()
@@ -454,6 +504,7 @@ def create_app() -> FastAPI:
     def run_search_endpoint(body: SearchIn) -> dict[str, Any]:
         from saari.sources import run_search
         from saari.sources.openalex import OpenAlexError
+        from saari.sources.crossref import CrossrefError
         from saari.sources.scopus import ScopusError
 
         try:
@@ -470,7 +521,7 @@ def create_app() -> FastAPI:
             )
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
-        except (ScopusError, OpenAlexError) as e:
+        except (ScopusError, OpenAlexError, CrossrefError) as e:
             raise HTTPException(502, str(e)) from None
 
     @app.get("/api/searches/{search_id}/results")

@@ -135,10 +135,11 @@ def search(
 ) -> dict[str, Any]:
     """Search a bibliographic source and persist results into the project.
 
-    `source`: "openalex" (default, keyless) or "scopus" (needs
+    `source`: "openalex" (default, keyless), "scopus" (needs
     SCOPUS_API_KEY, and SCOPUS_INST_TOKEN off a registered institutional
-    network; Scopus records may lack abstracts). Results are deduplicated
-    across sources by DOI.
+    network; Scopus records may lack abstracts), or "crossref" (keyless,
+    publisher metadata, abstracts often missing). Results are deduplicated
+    across sources by DOI / PMID / arXiv id.
 
     Completeness: the result has `n_available` (the source's total for the
     query) and `truncated` (True when only a sample was kept). A systematic
@@ -327,6 +328,64 @@ def paper_raw(paper_id: str) -> dict[str, Any] | None:
     if not full.exists():
         return None
     return {"path": str(full), "content": full.read_text()}
+
+
+@mcp.tool()
+def paper_add(identifiers: list[str], note: str | None = None) -> dict[str, Any]:
+    """Add papers you already know by identifier (not via keyword search).
+
+    Each identifier may be a DOI, a doi.org URL, an arXiv id or URL, a PMID
+    (`pmid:12345` or PubMed URL), or an OpenAlex id/URL. Resolved via
+    OpenAlex, with Crossref as the fallback for DOIs OpenAlex lacks. All are
+    recorded as one `manual` identification event, reported in PRISMA under
+    "other methods". Papers already in the corpus count as duplicates.
+
+    Returns per-identifier `results` (`status`: added | duplicate |
+    not_found | invalid | error) plus counts and `paper_ids`.
+    """
+    from saari.sources import add_papers
+
+    return add_papers(identifiers, note=note, project_root=paths.project_root())
+
+
+@mcp.tool()
+def duplicates_list() -> dict[str, Any]:
+    """List candidate duplicate pairs for the reviewer to resolve.
+
+    Exact-DOI duplicates are already merged at ingest. These are weaker
+    matches: shared PMID / arXiv id, or same normalized title + year (+-1)
+    + first-author surname (preprint vs published version). Nothing is
+    merged automatically. Resolve each with `papers_merge` or
+    `duplicates_dismiss`; `suggested_keep` is only a hint.
+    """
+    from saari import dedup
+
+    with db.connect(paths.db_path(paths.project_root())) as con:
+        return {"candidates": dedup.find_candidates(con)}
+
+
+@mcp.tool()
+def papers_merge(keep: str, remove: str, reason: str | None = None) -> dict[str, Any]:
+    """Merge confirmed duplicate `remove` into `keep`.
+
+    Fills missing ids/fields on `keep`, preserves `remove`'s provenance and
+    search links, keeps `remove` resolvable as an alias, and counts one more
+    "duplicate removed" in the PRISMA funnel. Refused when the two records
+    have conflicting screening decisions.
+    """
+    from saari import dedup
+
+    with db.connect(paths.db_path(paths.project_root())) as con:
+        return dedup.merge(con, keep, remove, reason=reason)
+
+
+@mcp.tool()
+def duplicates_dismiss(a: str, b: str, note: str | None = None) -> dict[str, Any]:
+    """Record that candidate pair `a` / `b` are distinct works (stops suggesting it)."""
+    from saari import dedup
+
+    with db.connect(paths.db_path(paths.project_root())) as con:
+        return dedup.dismiss(con, a, b, note=note)
 
 
 @mcp.tool()
