@@ -269,6 +269,56 @@ def snowball(
         console.print(f"[yellow]note:[/] {result.skipped_reason}")
 
 
+@app.command("snowball-included")
+def snowball_included(
+    top_n: Annotated[int | None, typer.Option("--top", help="Only the top N seeds by --sort")] = None,
+    sort: Annotated[str, typer.Option("--sort", help="auto | relevance | seen_in | cited")] = "auto",
+    direction: Annotated[str, typer.Option("--direction", "-d", help="backward | forward | both")] = "both",
+    max_per_direction: Annotated[int, typer.Option("--max", "-n", help="Max papers per direction per seed")] = 25,
+    skip_done: Annotated[
+        bool, typer.Option("--skip-done/--redo", help="Skip seeds already snowballed this direction")
+    ] = True,
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f", help="md | json")] = OutputFormat.md,
+) -> None:
+    """Snowball every included paper (or the top N) in one run.
+
+    Calls `snowball` per seed and totals the counts. With --skip-done (the
+    default), re-running after each screening round only snowballs new
+    includes; a round with zero new papers is saturation.
+    """
+    from saari.snowball_batch import snowball_seeds
+
+    root = _resolve_root()
+    try:
+        r = snowball_seeds(
+            top_n=top_n,
+            sort=sort,
+            direction=direction,
+            max_per_direction=max_per_direction,
+            skip_done=skip_done,
+            project_root=root,
+        )
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    if fmt is OutputFormat.json:
+        console.print_json(data=r)
+        return
+    console.print(
+        f"[green]Snowball {r['direction']}[/] from {r['n_seeds']} included seed(s): "
+        f"fetched={r['n_fetched']}, new={r['n_new']}, "
+        f"skipped(done)={r['n_skipped_done']}, errors={r['n_errors']}"
+    )
+    for row in r["seeds"]:
+        console.print(f"  {row.get('seed')}: fetched={row.get('n_fetched')} new={row.get('n_new')}")
+    for err in r["errors"]:
+        console.print(f"  [red]{err['seed']}[/]: {err['error']}")
+    if r.get("note"):
+        console.print(f"[yellow]note:[/] {r['note']}")
+    if r["saturated"]:
+        console.print("[green]Saturated:[/] this round found nothing new.")
+
+
 @app.command()
 def embed(
     only_missing: Annotated[bool, typer.Option("--only-missing/--all", help="Skip already-embedded papers")] = True,
@@ -462,51 +512,110 @@ def screen(
 @app.command()
 def triage(
     limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
+    sort: Annotated[
+        str, typer.Option("--sort", help="auto | relevance | seen_in | cited")
+    ] = "auto",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Rank by relevance to this text instead of the protocol"),
+    ] = None,
     min_citations: Annotated[int | None, typer.Option("--min-citations", "-c")] = None,
     year_from: Annotated[int | None, typer.Option("--year-from")] = None,
+    seen_in_at_least: Annotated[int | None, typer.Option("--seen-in-at-least")] = None,
     fmt: Annotated[OutputFormat, typer.Option("--format", "-f", help="Output format")] = OutputFormat.md,
 ) -> None:
     """Show the top undecided (candidate) papers as a triage checklist.
 
-    Default output is markdown: one paper per block with `[ ]` checkbox,
-    title, meta, seen_in count, and abstract excerpt. Designed to be
-    scannable by agents and humans, and easy to paste into chat.
-    Once you decide, run `saari screen <id> include|exclude [--note ...]`.
+    Sort: `relevance` ranks by semantic similarity to --query, else to the
+    study protocol (needs embeddings: `saari refresh`); `seen_in` by search
+    overlap; `cited` by citations. `auto` (default) uses relevance when it
+    can, else seen_in. Then: `saari screen <id> include|exclude --note ...`.
     """
+    from saari.triage import rank_papers
+
     root = _resolve_root()
-    with db.connect(paths.db_path(root)) as con:
-        counts = db.count_by_status(con)
-        papers = db.list_papers(
-            con,
-            limit=limit,
+    try:
+        r = rank_papers(
             status="candidate",
+            sort=sort,
+            query=query,
+            limit=limit,
             min_citations=min_citations,
             year_from=year_from,
-            order_by="COALESCE(cited_by_count, 0) DESC",
+            seen_in_at_least=seen_in_at_least,
+            project_root=root,
         )
-    n_candidates = counts.get("candidate", 0)
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    papers = r.papers
+    scores = r.scores if r.sort == "relevance" else {}
+    with db.connect(paths.db_path(root)) as con:
+        n_candidates = db.count_by_status(con).get("candidate", 0)
 
     if fmt is OutputFormat.json:
-        console.print_json(
-            data={
-                "n_candidates": n_candidates,
-                "limit": limit,
-                "papers": [_paper_card_dict(p) for p in papers],
-            }
-        )
+        data = {
+            "n_candidates": n_candidates,
+            "n_matching": r.n_matching,
+            "limit": limit,
+            "sort": r.sort,
+            "basis": r.basis,
+            "papers": [
+                {**_paper_card_dict(p), **({"score": scores.get(p.id)} if scores else {})}
+                for p in papers
+            ],
+        }
+        if r.note:
+            data["note"] = r.note
+        console.print_json(data=data)
         return
 
     if fmt is OutputFormat.md:
-        print(_render_md_triage(papers, n_candidates, limit))
+        print(_render_md_triage(papers, n_candidates, limit, scores=scores, sort_label=_sort_label(r)))
+        if r.note:
+            print(f"\nnote: {r.note}")
         return
 
     console.print(
-        f"[bold]Triage[/] — showing {len(papers)} of {n_candidates} candidates"
+        f"[bold]Triage[/] - showing {len(papers)} of {n_candidates} candidates ({_sort_label(r)})"
     )
+    if r.note:
+        console.print(f"[yellow]note:[/] {r.note}")
     if fmt is OutputFormat.cards:
         _print_paper_cards(papers)
     else:
         _print_paper_table(papers)
+
+
+def _sort_label(r) -> str:
+    return f"sort={r.sort}" + (f" vs {r.basis}" if r.basis else "")
+
+
+@app.command()
+def guide(
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f", help="md | json")] = OutputFormat.md,
+) -> None:
+    """Workflow map: stages in order, tools per stage, prerequisites, next step.
+
+    Same data as the `guide` MCP tool. Works outside a project too (then the
+    next step is `saari init`).
+    """
+    from saari.guide import guide_data
+
+    data = guide_data()
+    if fmt is OutputFormat.json:
+        console.print_json(data=data)
+        return
+    lines = ["## saari workflow", ""]
+    for i, st in enumerate(data["pipeline"], 1):
+        state = f" [{st['state']}: {st['detail']}]" if "state" in st else ""
+        lines.append(f"{i}. **{st['key']}**{state} - {st['do']}")
+        lines.append(f"   cli: `{st['cli']}`  mcp: {', '.join(st['tools'])}")
+    lines += ["", "### requires"]
+    lines += [f"- {k}: {v}" for k, v in data["requires"].items()]
+    nxt = data["next"]
+    lines += ["", f"**next:** `{nxt['tool']}` - {nxt['why']}"]
+    print("\n".join(lines))
 
 
 @papers_app.command("list")
@@ -896,9 +1005,13 @@ def _render_md_triage(
     n_candidates: int,
     limit: int,
     heading: str = "Triage",
+    scores: dict[str, float | None] | None = None,
+    sort_label: str | None = None,
 ) -> str:
+    scores = scores or {}
     lines: list[str] = []
-    lines.append(f"## {heading} — {len(papers)} of {n_candidates} shown")
+    suffix = f" ({sort_label})" if sort_label else ""
+    lines.append(f"## {heading} — {len(papers)} of {n_candidates} shown{suffix}")
     lines.append("")
     for p in papers:
         meta_bits = []
@@ -912,6 +1025,9 @@ def _render_md_triage(
         flags = _paper_flags(p)
         flag_str = f"  ·  flags: {' '.join(flags)}" if flags else ""
         seen = f"  ·  seen_in={p.seen_in}" if p.seen_in > 1 else ""
+        if p.id in scores:
+            sc = scores[p.id]
+            meta = f"score={sc:+.3f}, {meta}" if sc is not None else f"score=n/a, {meta}"
         lines.append(f"- [ ] `{p.id}` — **{p.title}**  ({meta}){seen}{flag_str}")
         excerpt = _abstract_excerpt(p.abstract)
         if excerpt:

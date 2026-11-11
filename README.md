@@ -52,7 +52,9 @@ at the end):
 npx skills add Novia-RDI-Seafaring/saari --skill litreview
 ```
 
-Then ask your agent to start a literature review. It will set the protocol,
+Then ask your agent to start a literature review. On connect the MCP server
+tells the agent to call `guide`, which returns the pipeline, what each step
+needs, and the next step for this project. The agent will set the protocol,
 search, snowball, screen, and export — and the outputs land as plain files
 in your folder, next to your draft.
 
@@ -63,11 +65,19 @@ cd my-paper/
 saari init
 saari study set --title "..." --question "..." --criteria "..."
 saari search "digital twin maritime safety" --limit 50
-saari snowball openalex:W1234567890
 saari refresh                      # embed new papers + rebuild the landscape
-saari triage                       # screen candidates
+saari triage                       # candidates, most relevant to the protocol first
+saari screen openalex:W123 include --note "meets criterion 2"
+saari snowball-included            # references + citers of every included paper
+saari refresh && saari triage      # screen what arrived; repeat to saturation
 saari export slr                   # PRISMA + manuscript scaffold + slides
 ```
+
+`saari guide` prints the workflow map and the suggested next step.
+`saari triage --sort` takes `auto` (default: relevance to the protocol when
+papers are embedded, else `seen_in`), `relevance`, `seen_in` (found by the
+most searches), or `cited`. `--query "..."` ranks by relevance to that text
+instead of the protocol.
 
 `saari --help` lists everything. For the web UI, install the serve extra
 (`uv tool install 'saari[serve]'`) and run `saari serve`.

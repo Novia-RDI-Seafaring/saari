@@ -19,8 +19,10 @@ the CLI otherwise.
 
 ## Step 0: bootstrap
 
-1. Check whether the saari MCP tools (`search`, `screen`, `papers_list`, ...)
-   are available in this session. If yes, skip to Step 1.
+1. Check whether the saari MCP tools (`guide`, `search`, `screen`, ...)
+   are available in this session. If yes, call `guide`: it returns the
+   pipeline, each tool's prerequisites, and `next` (the recommended next
+   call for this project's state). Then skip to Step 1.
 2. Check the CLI: `uvx saari where`. If saari is not installed, install it
    with `uv tool install saari` (or use `uvx saari ...` per call).
 3. If the folder is not yet a saari project, run `saari init`. This creates
@@ -41,7 +43,8 @@ Never search before the protocol is set. Ask the user for, then record:
 - a working title.
 
 Record them with `saari study set --title ... --question ... --criteria ...`
-(CLI) or the `study` MCP tool. Screening decisions made without recorded
+(CLI) or the `study_set` MCP tool. The question and criteria also drive the
+relevance ranking in `triage`, so write them as concrete prose. Screening decisions made without recorded
 criteria are not systematic and will weaken the exported review.
 
 ## Step 2: search wide
@@ -55,25 +58,35 @@ criteria are not systematic and will weaken the exported review.
   institutional-access problem, not a bug) and continue with OpenAlex.
 - Duplicates are deduplicated automatically; a paper seen in multiple
   searches is a relevance signal (`seen_in` on paper cards).
-- After searching, run `refresh` once to embed new papers and re-project the
-  landscape. Then use `query` (semantic search over the corpus) to check
-  coverage: if an obviously relevant phrasing returns thin results, search
+- Keyword search is noisy. After searching, run `refresh` once to embed new
+  papers and re-project the landscape. Then use `query` (semantic search
+  over the corpus) to check coverage. Write the query as 2-3 sentences
+  describing what a relevant paper says; that beats keywords by a wide
+  margin. If an obviously relevant phrasing returns thin results, search
   again with new terms.
 
 ## Step 3: snowball
 
-For each clearly relevant paper found, run `snowball` (references and
-citations via OpenAlex) to pull in its neighborhood. Repeat on newly found
-key papers until snowballing stops surfacing new relevant work (saturation).
-Run `refresh` after snowball rounds.
+Once some papers are included, run `snowball_included` (CLI:
+`saari snowball-included`). It snowballs every included paper (references
+and citers via OpenAlex) in one call and skips seeds already snowballed, so
+each later round only expands new includes. Use `top_n` to cap a large
+round, or `snowball` for a single seed. After each round: `refresh`, screen
+the arrivals, and run `snowball_included` again. The round reports
+`saturated: true` when it found nothing new; that is the stopping signal.
 
 ## Step 4: screen with reasons
 
 - Screen every candidate to `included`, `excluded`, or `maybe` using
   `screen`, and always record a short note with the reason, phrased against
   the protocol's criteria.
-- Use `triage` / `papers_list` to work through candidates in batches; read
-  abstracts (`paper_show`) before deciding. Do not screen on titles alone
+- Use `triage` to work through candidates in batches. By default it ranks
+  by semantic relevance to the protocol (each card has a `score`) once
+  papers are embedded, else by `seen_in`; the reply's `sort` and `note` say
+  which. `triage(query="...")` gives the most relevant undecided papers for
+  a specific sub-topic. Avoid `sort="cited"` for screening: it surfaces
+  famous off-topic papers first. Read abstracts (`paper_show`) before
+  deciding. Do not screen on titles alone
   unless the title alone establishes an exclusion criterion.
 - Revisit `maybe` papers at the end; a review should ship with zero maybes.
 - The user is the reviewer of record: for borderline calls, present the
