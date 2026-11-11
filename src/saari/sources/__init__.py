@@ -330,6 +330,10 @@ def add_papers(
                 query=", ".join(r for r, _, _ in parsed),
                 params=params,
                 paper_ids=paper_ids,
+                # An add by identifier is complete by construction: every
+                # resolved identifier is retrieved, nothing is sampled.
+                n_available=len(paper_ids),
+                truncated=False,
             )
 
     return {
