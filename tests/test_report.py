@@ -171,3 +171,29 @@ def test_limitations_sources_bullet_is_factual():
     assert "2 databases (openalex, scopus)" in multi
     # No source info at all: keep the conservative single-source wording.
     assert "Single bibliographic source" in report.limitations_block(None)
+
+
+def test_build_prisma_manual_arm_and_exact_other():
+    funnel = {
+        "searches": [
+            {"source": "openalex", "query": "q", "n_returned": 10, "created_at": "2026-07-01"},
+            {"source": "crossref", "query": "q", "n_returned": 5, "created_at": "2026-07-01"},
+            {"source": "manual", "query": "10.1/x", "n_returned": 2, "created_at": "2026-07-02"},
+        ],
+        "n_fetched": 17,
+        "n_unique": 14,
+        "n_unlinked": 1,  # exact count from study.funnel
+        "n_merged": 2,
+        "by_status": {"candidate": 14},
+    }
+    d = report.build_prisma(funnel, [])
+    idn = d["identification"]
+    assert idn["n_database"] == 15 and idn["n_manual"] == 2 and idn["n_other"] == 1
+    assert idn["n_total"] == 18 and d["n_duplicates_removed"] == 4
+    assert d["n_duplicates_merged"] == 2
+    assert "2 by reviewer merge" in report.render_prisma_mermaid(d)
+    lim = report.limitations_block(idn["by_source"])
+    assert "2 databases (crossref, openalex)" in lim
+    md = report.build_paper_md({}, d, funnel["searches"], {}, [])
+    assert "on Crossref and OpenAlex (15 records across 2 searches)" in md
+    assert "2 record(s) added by identifier" in md

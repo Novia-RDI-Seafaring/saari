@@ -229,6 +229,31 @@ def fetch_by_id(
     return _work_to_paper(work), _dump_raw(work, project_root)
 
 
+def fetch_by_external_id(
+    kind: str,
+    value: str,
+    mailto: str | None = None,
+    project_root: Path | None = None,
+) -> tuple[Paper, str] | None:
+    """Fetch one work by DOI or PMID (`/works/doi:<doi>`, `/works/pmid:<n>`).
+
+    These are the external-id forms the OpenAlex single-work endpoint
+    documents. Returns (paper, raw_path), or None on 404.
+    """
+    if kind not in ("doi", "pmid"):
+        raise ValueError(f"unsupported OpenAlex external id kind {kind!r}")
+    from urllib.parse import quote
+
+    key = f"{kind}:{quote(value, safe='/:')}"
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(f"{BASE_URL}/works/{key}", params={"mailto": mailto or _resolve_mailto()})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        work = resp.json()
+    return _work_to_paper(work), _dump_raw(work, project_root)
+
+
 def fetch_works_by_ids(
     ids: list[str],
     mailto: str | None = None,

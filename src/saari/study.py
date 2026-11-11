@@ -102,6 +102,16 @@ def funnel(project_root: Path | None = None) -> dict[str, Any]:
         searches = [dict(r) for r in sr]
         n_fetched = sum(int(r["n_returned"] or 0) for r in sr)
         n_unique = con.execute("SELECT COUNT(*) FROM paper").fetchone()[0]
+        # Records that entered outside any recorded search event (e.g. a
+        # snowball seed fetched by id), plus such records later folded into
+        # another by a reviewer merge. Lets PRISMA count them exactly.
+        n_unlinked = con.execute(
+            "SELECT COUNT(*) FROM paper p WHERE NOT EXISTS "
+            "(SELECT 1 FROM search_result sr WHERE sr.paper_id = p.id)"
+        ).fetchone()[0]
+        merge_row = con.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(absorbed_unlinked), 0) AS absorbed FROM paper_merge"
+        ).fetchone()
         by_status_rows = con.execute(
             "SELECT status, COUNT(*) AS n FROM paper GROUP BY status"
         ).fetchall()
@@ -119,6 +129,8 @@ def funnel(project_root: Path | None = None) -> dict[str, Any]:
         "searches": searches,
         "n_fetched": n_fetched,
         "n_unique": n_unique,
+        "n_unlinked": int(n_unlinked) + int(merge_row["absorbed"]),
+        "n_merged": int(merge_row["n"]),
         "n_screened": total_screened,
         "n_unscreened": by_status.get("candidate", 0),
         "by_status": by_status,

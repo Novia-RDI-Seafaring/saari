@@ -20,6 +20,25 @@ DOI, PRISMA reporting splits identification per database, and Scopus search
 records usually arrive without abstracts (Elsevier entitlement) — a matching
 OpenAlex hit on the same DOI supplies the abstract.
 
+Crossref is a keyless third database (`--source crossref`). Set
+`CROSSREF_MAILTO` to join its polite pool; saari sends no address otherwise.
+Crossref abstracts are often missing.
+
+**Known papers.** Add papers you already know by identifier:
+`saari papers add 10.1000/xyz arXiv:2101.00001 pmid:29456894 W2741809807`
+(doi.org, arxiv.org, PubMed and OpenAlex URLs work too). Lookups go to
+OpenAlex first, then Crossref for DOIs OpenAlex lacks. Each call is one
+`manual` identification event. PRISMA reports it under other methods, not
+as a database search.
+
+**Duplicates.** Exact DOI, PMID or arXiv-id matches are deduplicated at
+ingest. Weaker matches (same normalized title, year within 1, same first
+author, such as a preprint and its published version) are never merged
+automatically. List them with `saari papers duplicates`, then resolve each
+with `saari papers merge KEEP REMOVE` or `saari papers not-duplicate A B`.
+A merge keeps the removed record's ids, provenance and search links, and
+counts as a duplicate removed in the PRISMA flow.
+
 One toolkit, three surfaces with the same operations:
 
 - **MCP server** (`saari-mcp`) — for agents. The primary interface.

@@ -53,8 +53,18 @@ criteria are not systematic and will weaken the exported review.
   results are deduplicated by DOI automatically. If Scopus errors mention
   IP ranges or InstToken, relay the message to the user (it is an
   institutional-access problem, not a bug) and continue with OpenAlex.
-- Duplicates are deduplicated automatically; a paper seen in multiple
-  searches is a relevance signal (`seen_in` on paper cards).
+- `source="crossref"` is a keyless third database (publisher metadata,
+  abstracts often missing).
+- Papers the user already knows (a DOI, arXiv id, PMID, OpenAlex id, or
+  their URLs) go in with `paper_add`, not with a keyword search. They are
+  logged as a `manual` event and counted in PRISMA under other methods.
+- Exact-identifier duplicates are deduplicated automatically; a paper seen
+  in multiple searches is a relevance signal (`seen_in` on paper cards).
+- Before screening, run `duplicates_list`. It lists likely duplicates
+  (e.g. preprint vs published version) but never merges them. For each
+  pair, compare the records and either `papers_merge(keep, remove)` or
+  `duplicates_dismiss(a, b)`. Ask the user when unsure: a false merge is
+  worse than a missed duplicate.
 - After searching, run `refresh` once to embed new papers and re-project the
   landscape. Then use `query` (semantic search over the corpus) to check
   coverage: if an obviously relevant phrasing returns thin results, search

@@ -201,16 +201,18 @@ def search(
     year_from: Annotated[int | None, typer.Option("--year-from")] = None,
     year_to: Annotated[int | None, typer.Option("--year-to")] = None,
     source: Annotated[
-        str, typer.Option("--source", "-s", help="openalex | scopus")
+        str, typer.Option("--source", "-s", help="openalex | scopus | crossref")
     ] = "openalex",
 ) -> None:
     """Search a bibliographic source and persist results into the current project.
 
     Scopus needs SCOPUS_API_KEY (and, off a registered institutional
-    network, SCOPUS_INST_TOKEN). Results found by both sources are
-    deduplicated by DOI.
+    network, SCOPUS_INST_TOKEN). Crossref is keyless (set CROSSREF_MAILTO
+    for the polite pool). Results found by several sources are
+    deduplicated by DOI / PMID / arXiv id.
     """
     from saari.sources import run_search
+    from saari.sources.crossref import CrossrefError
     from saari.sources.scopus import ScopusError
 
     root = _resolve_root()
@@ -224,7 +226,7 @@ def search(
             year_to=year_to,
             project_root=root,
         )
-    except (ValueError, ScopusError) as e:
+    except (ValueError, ScopusError, CrossrefError) as e:
         console.print(f"[red]error:[/] {e}")
         raise typer.Exit(2) from None
     if result["n_fetched"] == 0:
@@ -723,6 +725,104 @@ def papers_raw(
         console.print(f"[red]Raw file missing:[/] {full}")
         raise typer.Exit(1)
     console.print(full.read_text())
+
+
+@papers_app.command("add")
+def papers_add(
+    identifiers: Annotated[
+        list[str],
+        typer.Argument(help="DOI, doi.org URL, arXiv id/URL, pmid:<n> / PubMed URL, or OpenAlex id/URL"),
+    ],
+    note: Annotated[str | None, typer.Option("--note", help="Where these came from (e.g. 'expert suggestion')")] = None,
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f")] = OutputFormat.table,
+) -> None:
+    """Add papers you already know, by identifier.
+
+    Resolved via OpenAlex (Crossref as fallback for DOIs). Recorded as one
+    'manual' identification event, which PRISMA reports under other methods.
+    """
+    from saari.sources import add_papers
+
+    root = _resolve_root()
+    result = add_papers(identifiers, note=note, project_root=root)
+    if fmt is OutputFormat.json:
+        console.print_json(data=result)
+    else:
+        for r in result["results"]:
+            colour = {"added": "green", "duplicate": "yellow"}.get(r["status"], "red")
+            detail = r.get("paper_id") or r.get("error") or ""
+            via = f" [dim]via {r['resolved_via']}[/]" if r.get("resolved_via") else ""
+            console.print(f"[{colour}]{r['status']:<9}[/] {r['input']}  {detail}{via}")
+        console.print(
+            f"[dim]manual event #{result['search_id']}: new={result['n_new']} "
+            f"duplicate={result['n_duplicate']} failed={result['n_failed']}[/]"
+        )
+    if result["n_failed"] and not result["paper_ids"]:
+        raise typer.Exit(1)
+
+
+@papers_app.command("duplicates")
+def papers_duplicates(
+    fmt: Annotated[OutputFormat, typer.Option("--format", "-f")] = OutputFormat.table,
+) -> None:
+    """List candidate duplicate pairs for review (nothing is merged automatically)."""
+    from saari import dedup
+
+    root = _resolve_root()
+    with db.connect(paths.db_path(root)) as con:
+        cands = dedup.find_candidates(con)
+    if fmt is OutputFormat.json:
+        console.print_json(data={"candidates": cands})
+        return
+    if not cands:
+        console.print("[green]No candidate duplicates.[/]")
+        return
+    for c in cands:
+        console.print(f"[bold]{c['confidence']}[/]  {', '.join(c['signals'])}  [dim]suggested keep: {c['suggested_keep']}[/]")
+        for p in c["papers"]:
+            console.print(f"    {p['id']}  ({p['year'] or 'n.d.'}, {p['status']})  {p['title']}  [dim]{p['doi'] or ''}[/]")
+    console.print(
+        "[dim]Resolve with `saari papers merge KEEP REMOVE` or "
+        "`saari papers not-duplicate A B`.[/]"
+    )
+
+
+@papers_app.command("merge")
+def papers_merge(
+    keep: Annotated[str, typer.Argument(help="Record to keep (id, DOI, arxiv, PMID)")],
+    remove: Annotated[str, typer.Argument(help="Duplicate record to fold into KEEP")],
+    reason: Annotated[str | None, typer.Option("--reason", help="Why these are the same work")] = None,
+) -> None:
+    """Merge a confirmed duplicate into another record (counts as a duplicate removed in PRISMA)."""
+    from saari import dedup
+
+    root = _resolve_root()
+    try:
+        with db.connect(paths.db_path(root)) as con:
+            r = dedup.merge(con, keep, remove, reason=reason)
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    console.print(f"[green]Merged[/] {r['removed_id']} into {r['kept_id']} ({', '.join(r['signals']) or 'no signals'})")
+
+
+@papers_app.command("not-duplicate")
+def papers_not_duplicate(
+    a: Annotated[str, typer.Argument(help="First record")],
+    b: Annotated[str, typer.Argument(help="Second record")],
+    note: Annotated[str | None, typer.Option("--note")] = None,
+) -> None:
+    """Mark a candidate pair as distinct works so it is no longer suggested."""
+    from saari import dedup
+
+    root = _resolve_root()
+    try:
+        with db.connect(paths.db_path(root)) as con:
+            r = dedup.dismiss(con, a, b, note=note)
+    except ValueError as e:
+        console.print(f"[red]error:[/] {e}")
+        raise typer.Exit(2) from None
+    console.print(f"[green]Marked distinct:[/] {r['a']} / {r['b']}")
 
 
 export_app = typer.Typer(help="Compile the corpus into manuscript-ready formats", no_args_is_help=True)
