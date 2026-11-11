@@ -183,18 +183,27 @@ def snowball(
 
     all_fetched = backward_fetched + forward_fetched
 
-    with db.connect(db_file) as con:
-        fetched_ids = [p.id for p, _ in all_fetched]
-        existing_ids: set[str] = set()
-        if fetched_ids:
-            placeholders = ",".join(["?"] * len(fetched_ids))
-            existing_rows = con.execute(
-                f"SELECT id FROM paper WHERE id IN ({placeholders})", fetched_ids
-            ).fetchall()
-            existing_ids = {row["id"] for row in existing_rows}
+    # Resolve each fetched paper against the corpus by exact identifier
+    # (own id, merge alias, DOI, PMID, arXiv id). A neighbor already present
+    # under another id (e.g. a scopus: or crossref: record with the same
+    # DOI) links to that record instead of being inserted twice.
+    from saari.sources import find_existing
 
+    id_map: dict[str, str] = {}
+    n_new = 0
+    with db.connect(db_file) as con:
         for paper, raw_path in all_fetched:
-            db.upsert_paper(con, paper, raw_path=raw_path)
+            existing = find_existing(con, paper)
+            if existing is None:
+                n_new += 1
+                db.upsert_paper(con, paper, raw_path=raw_path)
+                id_map[paper.id] = paper.id
+            elif existing == paper.id:
+                db.upsert_paper(con, paper, raw_path=raw_path)
+                id_map[paper.id] = paper.id
+            else:
+                id_map[paper.id] = existing
+        fetched_ids = list(dict.fromkeys(id_map[p.id] for p, _ in all_fetched))
 
         # Recorded even when nothing came back: "0 of 0 available" is a
         # fact the report should be able to show.
@@ -213,8 +222,8 @@ def snowball(
             truncated=result.truncated,
         )
 
-    result.backward_paper_ids = [p.id for p, _ in backward_fetched]
-    result.forward_paper_ids = [p.id for p, _ in forward_fetched]
+    result.backward_paper_ids = [id_map[p.id] for p, _ in backward_fetched]
+    result.forward_paper_ids = [id_map[p.id] for p, _ in forward_fetched]
     result.n_fetched = len(all_fetched)
-    result.n_new = sum(1 for pid in fetched_ids if pid not in existing_ids)
+    result.n_new = n_new
     return result

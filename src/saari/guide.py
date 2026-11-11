@@ -16,8 +16,9 @@ from typing import Any
 
 from saari import paths
 
-# Stage keys match status.build_stages so state can be joined in. "map" is a
-# cross-cutting step (no SLR stage of its own) and carries no state.
+# Stage keys match status.build_stages so state can be joined in. "map",
+# "dedup" and "fulltext" are cross-cutting steps (no SLR stage of their own)
+# and carry no state.
 PIPELINE: list[dict[str, Any]] = [
     {
         "key": "protocol",
@@ -27,9 +28,14 @@ PIPELINE: list[dict[str, Any]] = [
     },
     {
         "key": "search",
-        "do": "Run 3-6 differently-phrased keyword searches. Keyword hits are noisy.",
-        "tools": ["search", "searches_list"],
-        "cli": "saari search QUERY",
+        "do": (
+            "Run 3-6 differently-phrased keyword searches (noisy). Check "
+            "`n_available` / `truncated` on every result: a truncated search is "
+            "a sample, so narrow it or rerun with fetch_all. Add papers the "
+            "user already knows with `paper_add`."
+        ),
+        "tools": ["search", "paper_add", "searches_list"],
+        "cli": "saari search QUERY [--all] [--scope title_abstract]; saari papers add DOI",
     },
     {
         "key": "map",
@@ -39,6 +45,15 @@ PIPELINE: list[dict[str, Any]] = [
         ),
         "tools": ["refresh", "query", "papers_similar", "canvas"],
         "cli": "saari refresh; saari query TEXT",
+    },
+    {
+        "key": "dedup",
+        "do": (
+            "Review likely duplicates (preprint vs published). Nothing merges "
+            "automatically beyond exact identifiers: merge or dismiss each pair."
+        ),
+        "tools": ["duplicates_list", "papers_merge", "duplicates_dismiss"],
+        "cli": "saari papers duplicates; saari papers merge KEEP REMOVE",
     },
     {
         "key": "screen",
@@ -59,6 +74,16 @@ PIPELINE: list[dict[str, Any]] = [
         "cli": "saari snowball-included; saari snowball ID",
     },
     {
+        "key": "fulltext",
+        "do": (
+            "Fetch open-access full text for included/maybe papers and read "
+            "it in slices (`paper_text` with offset or grep). Not every paper "
+            "has an OA copy; the report states how many were retrieved."
+        ),
+        "tools": ["fulltext_fetch", "paper_text"],
+        "cli": "saari fulltext fetch; saari papers text ID [--grep PATTERN]",
+    },
+    {
         "key": "report",
         "do": "Export the PRISMA-traced bundle, then author the WRITE slots.",
         "tools": ["export_slr", "export_bibtex", "export_prisma", "funnel"],
@@ -75,6 +100,9 @@ REQUIRES: dict[str, str] = {
     "canvas": "embed + project (refresh does both)",
     "project": "embed",
     "snowball_included": "at least one included paper",
+    "papers_merge": "a pair from duplicates_list; refused on conflicting screening decisions",
+    "paper_text": "the `fulltext` extra (saari[fulltext]) and an open-access copy",
+    "fulltext_fetch": "the `fulltext` extra (saari[fulltext]); screened papers",
     "export_slr": "protocol set and papers screened",
 }
 

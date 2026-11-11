@@ -390,15 +390,6 @@ def create_app() -> FastAPI:
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
 
-    @app.get("/api/papers/{paper_id:path}")
-    def get_paper(paper_id: str) -> dict[str, Any]:
-        root = paths.project_root()
-        with db.connect(paths.db_path(root)) as con:
-            p = db.get_paper(con, paper_id)
-        if not p:
-            raise HTTPException(404, f"Paper not found: {paper_id}")
-        return p.model_dump(mode="json")
-
     @app.get("/api/papers/{paper_id:path}/links")
     def paper_links(paper_id: str) -> dict[str, Any]:
         root = paths.project_root()
@@ -469,6 +460,17 @@ def create_app() -> FastAPI:
 
     # ---------- full text (own prefix: /api/papers/{id:path} would shadow it) ----------
 
+    # Registered after the /links, /raw and /similar sub-routes: the :path
+    # converter would otherwise swallow them.
+    @app.get("/api/papers/{paper_id:path}")
+    def get_paper(paper_id: str) -> dict[str, Any]:
+        root = paths.project_root()
+        with db.connect(paths.db_path(root)) as con:
+            p = db.get_paper(con, paper_id)
+        if not p:
+            raise HTTPException(404, f"Paper not found: {paper_id}")
+        return p.model_dump(mode="json")
+
     @app.get("/api/fulltext/{paper_id:path}")
     def paper_text(
         paper_id: str,
@@ -525,16 +527,23 @@ def create_app() -> FastAPI:
 
     @app.post("/api/papers/{paper_id:path}/snowball")
     def snowball(paper_id: str, body: SnowballIn) -> dict[str, Any]:
+        from saari.sources.openalex import OpenAlexError
+
         root = paths.project_root()
-        r = _snowball(
-            paper_id,
-            direction=body.direction,
-            max_per_direction=body.max_per_direction,
-            project_root=root,
-            max_backward=body.max_backward,
-            max_forward=body.max_forward,
-            max_records=body.max_records,
-        )
+        try:
+            r = _snowball(
+                paper_id,
+                direction=body.direction,
+                max_per_direction=body.max_per_direction,
+                project_root=root,
+                max_backward=body.max_backward,
+                max_forward=body.max_forward,
+                max_records=body.max_records,
+            )
+        except ValueError as e:  # unknown seed, bad direction, over the cap
+            raise HTTPException(400, str(e)) from None
+        except OpenAlexError as e:
+            raise HTTPException(502, str(e)) from None
         return {
             "seed": r.seed_paper_id,
             "direction": r.direction,

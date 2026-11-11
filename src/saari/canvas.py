@@ -367,7 +367,7 @@ function select(d) {
   if (d.cited != null) meta.push('cited=' + d.cited);
   if (d.venue) meta.push(d.venue);
   if (d.oa) meta.push('oa=' + d.oa);
-  const safeUrl = /^https?:\/\//i.test(d.url || '') ? escapeHtml(d.url) : '';
+  const safeUrl = /^https?:\\/\\//i.test(d.url || '') ? escapeHtml(d.url) : '';
   const idLink = safeUrl ? `<a href="${safeUrl}" target="_blank" rel="noopener">open →</a>` : '';
   detail.style.display = 'block';
   detail.innerHTML = `<h2>${escapeHtml(d.title)}</h2>
