@@ -99,6 +99,28 @@ Run `refresh` after snowball rounds.
 - The user is the reviewer of record: for borderline calls, present the
   abstract and your reasoning and let the user decide.
 
+## Step 4b: full text for included and maybe papers
+
+Title/abstract screening comes first. Then, for papers you need to verify or
+synthesize, fetch open-access full text:
+
+- `fulltext_fetch` (CLI: `saari fulltext fetch`) fetches OA copies for all
+  `included` papers (pass `status="maybe"` for borderline ones) and returns
+  how many were retrieved plus a reason for each paper without full text.
+- `paper_text(paper_id)` returns metadata and a 4000-char slice. Page with
+  `offset` / `next_offset`; use `grep="regex"` to jump to methods, results,
+  or a specific claim instead of reading everything. Cached after the first
+  fetch, so repeat reads are free.
+- Only open-access copies are used. `unavailable` means no OA copy is known;
+  `failed` means one was tried and the reason says why. Do not try to get
+  around paywalls; ask the user for the PDF instead.
+- Check `quality` and `source_version` (a `submittedVersion` preprint may
+  differ from the published paper). Needs the `saari[fulltext]` extra; if a
+  tool returns an install hint, relay it to the user.
+- Record in screening notes when a decision was made or revised on full
+  text. Retrieved is not the same as read: the exported Limitations section
+  reports retrieval counts only.
+
 ## Step 5: map the landscape
 
 - `saari serve` starts the local web UI (corpus, screening, graph views) if

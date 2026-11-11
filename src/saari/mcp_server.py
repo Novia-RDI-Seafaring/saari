@@ -389,6 +389,67 @@ def duplicates_dismiss(a: str, b: str, note: str | None = None) -> dict[str, Any
 
 
 @mcp.tool()
+def paper_text(
+    paper_id: str,
+    offset: int = 0,
+    max_chars: int = 4000,
+    grep: str | None = None,
+    fetch: bool = True,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Read a paper's open-access full text, a bounded slice at a time.
+
+    First call downloads an OA copy (OA locations, PMC, arXiv; never
+    paywalled) and caches PDF + text under `.saaristo/fulltext/`; later
+    calls are offline. Returns metadata (`status`, `reason`, `n_chars`,
+    `n_pages`, `quality`, `source_url`, `source_version`, `text_path`) and:
+
+    - without `grep`: `text` = chars `[offset, offset+max_chars)` (cap
+      50000), `next_offset` (None at end), `page_start`/`page_end`;
+    - with `grep` (case-insensitive regex): `hits[]` of `{offset, page,
+      snippet}`; page to a hit with `offset`.
+
+    `status` is available | unavailable (no OA copy) | failed (with reason).
+    `quality`: good | low_text | garbled. `refresh` retries a recorded
+    failure. `fetch=false` reads only what is cached. Use after title/
+    abstract screening, on included/maybe papers.
+    """
+    from saari import fulltext as _ft
+
+    try:
+        return _ft.read_text(
+            paper_id, offset=offset, max_chars=max_chars, grep=grep,
+            fetch_if_missing=fetch, refresh=refresh, project_root=paths.project_root(),
+        )
+    except (KeyError, _ft.FulltextDependencyError) as e:
+        return {"paper_id": paper_id, "error": str(e).strip("'\"")}
+
+
+@mcp.tool()
+def fulltext_fetch(
+    status: str | None = "included",
+    refresh: bool = False,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Batch-fetch open-access full text for papers with screening `status`.
+
+    Default `included`; pass "maybe" for borderline papers, or null for all.
+    Already-recorded papers are skipped unless `refresh=True`. Returns
+    counts (`n_available`, `n_unavailable`, `n_failed`, `n_from_cache`)
+    plus `missing[]` with a reason per paper without full text. Synchronous
+    and polite (1 s per host), so batch a few dozen at a time with `limit`.
+    """
+    from saari import fulltext as _ft
+
+    try:
+        return _ft.fetch_many(
+            status=status, refresh=refresh, limit=limit, project_root=paths.project_root(),
+        )
+    except _ft.FulltextDependencyError as e:
+        return {"error": str(e)}
+
+
+@mcp.tool()
 def searches_list(limit: int = 20) -> dict[str, Any]:
     """List past searches and snowball events in this project."""
     root = paths.project_root()

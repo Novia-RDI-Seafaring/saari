@@ -103,6 +103,25 @@ CREATE TABLE IF NOT EXISTS paper_projection (
     params_json TEXT NOT NULL DEFAULT '{}',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Open-access full-text retrieval state (see fulltext.py). One row per
+-- attempted paper. status: available | unavailable | failed.
+CREATE TABLE IF NOT EXISTS paper_fulltext (
+    paper_id TEXT PRIMARY KEY REFERENCES paper(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    reason TEXT,
+    source_url TEXT,
+    source_kind TEXT,
+    source_version TEXT,
+    pdf_path TEXT,
+    text_path TEXT,
+    n_chars INTEGER,
+    n_pages INTEGER,
+    quality TEXT,
+    sha256 TEXT,
+    attempts_json TEXT NOT NULL DEFAULT '[]',
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 VEC_SCHEMA = f"""

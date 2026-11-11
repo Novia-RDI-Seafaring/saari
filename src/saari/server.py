@@ -13,6 +13,8 @@ Routes:
     GET  /api/papers/{id}/similar
     POST /api/papers/{id}/screen
     POST /api/papers/{id}/snowball
+    GET  /api/fulltext/{id}          (OA full text: slice / grep)
+    POST /api/fulltext/fetch         (batch OA full-text fetch)
     GET  /api/searches
     POST /api/searches               (openalex or scopus, DOI-deduped)
     GET  /api/searches/{id}/results
@@ -123,6 +125,12 @@ class SnowballIn(BaseModel):
     max_backward: int | None = None  # None = all references
     max_forward: int | None = 25  # None = all citers up to max_records
     max_records: int | None = None
+
+
+class FulltextFetchIn(BaseModel):
+    status: str | None = "included"
+    refresh: bool = False
+    limit: int | None = None
 
 
 class SearchIn(BaseModel):
@@ -446,6 +454,41 @@ def create_app() -> FastAPI:
                 for p in papers
             ],
         }
+
+    # ---------- full text (own prefix: /api/papers/{id:path} would shadow it) ----------
+
+    @app.get("/api/fulltext/{paper_id:path}")
+    def paper_text(
+        paper_id: str,
+        offset: int = 0,
+        max_chars: int = 4000,
+        grep: str | None = None,
+        fetch: bool = True,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        from saari import fulltext as _ft
+
+        try:
+            return _ft.read_text(
+                paper_id, offset=offset, max_chars=max_chars, grep=grep,
+                fetch_if_missing=fetch, refresh=refresh, project_root=paths.project_root(),
+            )
+        except KeyError:
+            raise HTTPException(404, f"Paper not found: {paper_id}") from None
+        except _ft.FulltextDependencyError as e:
+            raise HTTPException(501, str(e)) from None
+
+    @app.post("/api/fulltext/fetch")
+    def fulltext_fetch(body: FulltextFetchIn) -> dict[str, Any]:
+        from saari import fulltext as _ft
+
+        try:
+            return _ft.fetch_many(
+                status=body.status, refresh=body.refresh, limit=body.limit,
+                project_root=paths.project_root(),
+            )
+        except _ft.FulltextDependencyError as e:
+            raise HTTPException(501, str(e)) from None
 
     @app.post("/api/screen-batch")
     def screen_batch(body: ScreenBatchIn) -> dict[str, Any]:

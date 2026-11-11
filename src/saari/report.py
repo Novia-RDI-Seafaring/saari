@@ -564,9 +564,28 @@ def completeness_bullets(c: dict[str, Any] | None, max_listed: int = 8) -> str:
     return out
 
 
+def _fulltext_bullet(fulltext: dict[str, int] | None) -> str:
+    n_inc = (fulltext or {}).get("n_papers", 0)
+    n_ft = (fulltext or {}).get("n_available", 0)
+    if not n_ft:
+        return (
+            "- **Title/abstract screening only.** Unless full texts were separately retrieved and "
+            "recorded, screening relied on titles and abstracts.\n"
+        )
+    return (
+        "- **Title/abstract screening; partial full-text retrieval.** Screening relied on titles "
+        f"and abstracts. Open-access full text was retrieved for {n_ft} of {n_inc} included "
+        "papers; the other "
+        f"{max(n_inc - n_ft, 0)} had no retrieved full text. Retrieval is not assessment: "
+        "unless recorded separately, do not assume the retrieved texts were read in full "
+        "or appraised.\n"
+    )
+
+
 def limitations_block(
     by_source: dict[str, int] | None = None,
     completeness: dict[str, Any] | None = None,
+    fulltext: dict[str, int] | None = None,
 ) -> str:
     """Auto-disclosed method limitations so the draft cannot overclaim.
 
@@ -574,6 +593,9 @@ def limitations_block(
     factual: single-source wording only when a single database was used.
     `completeness` (from `search_completeness`) discloses truncated
     searches / snowballs and events whose source totals were not recorded.
+    `fulltext` (`fulltext.coverage()`: n_papers / n_available for included
+    papers) states how many full texts were retrieved. Retrieved is not
+    read: the wording never claims full-text assessment.
     """
     databases = sorted(k for k in (by_source or {}) if k not in NON_DATABASE_SOURCES)
     if len(databases) > 1:
@@ -597,9 +619,8 @@ def limitations_block(
         + "- **Single-reviewer screening.** Inclusion/exclusion decisions were made by a single "
         "reviewer (human or LLM agent). There was no second independent reviewer and no "
         "inter-rater agreement statistic (e.g. Cohen's κ).\n"
-        "- **Title/abstract screening only.** Unless full texts were separately retrieved and "
-        "recorded, screening relied on titles and abstracts.\n"
-        "- **No formal risk-of-bias / quality appraisal** was applied to included studies "
+        + _fulltext_bullet(fulltext)
+        + "- **No formal risk-of-bias / quality appraisal** was applied to included studies "
         "unless recorded separately.\n"
         "- **No prospective registration.** This protocol was not registered on PROSPERO or OSF.\n"
     )
@@ -617,6 +638,7 @@ def build_paper_md(
     included: list[Paper],
     prisma_fig: str = "prisma.svg",
     landscape_fig: str = "landscape.svg",
+    fulltext: dict[str, int] | None = None,
 ) -> str:
     title = (study_rec.get("title") or "").strip() or "A Systematic Literature Review"
     question = (study_rec.get("question") or "").strip()
@@ -678,7 +700,8 @@ def build_paper_md(
     out.append(
         limitations_block(
             prisma["identification"]["by_source"],
-            prisma["identification"].get("completeness"),
+            completeness=prisma["identification"].get("completeness"),
+            fulltext=fulltext,
         )
     )
 
